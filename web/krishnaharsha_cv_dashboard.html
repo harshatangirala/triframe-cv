@@ -1,0 +1,16 @@
+<!-- Computer Vision with Deep Learning Project Dashboard: paste into a Custom HTML / Embed code block -->
+<section style="max-width:1100px;margin:0 auto;padding:24px 16px;font-family:system-ui,Segoe UI,Arial,sans-serif;color:#1d2533">
+  <h1 style="font-size:32px;margin:0 0 12px">Computer Vision with Deep Learning Project Dashboard</h1>
+  <p style="font-size:16px;line-height:1.6">TriFrame tests whether weekly, daily and hourly chart images add information about a US stock's
+  next-20-day volatility, drawdown risk and 5-day relative direction beyond plain numbers from the same price history. Seven frozen,
+  ImageNet-pretrained vision models were compared with a numerical baseline on 979 US stocks, with chronological training,
+  validation and test periods and a sealed final holdout.</p>
+  <p style="font-size:16px;line-height:1.6"><strong>How to use:</strong> upload three TradingView screenshots of one stock (1W, 1D and 1H).
+  The app reads the ticker and the last bar of each picture, checks them against market data, rebuilds the exact inputs the model
+  was trained on and returns expected volatility, the chance of a 10% drawdown, the chance of beating the median stock over five
+  days, and a NO TRADE decision (the default).</p>
+  <p style="font-size:14px;color:#555">Test-period results (2020-2022): volatility R&sup2; 0.50;
+  drawdown AUC 0.66; direction AUC 0.510.
+  Research output, not investment advice.</p>
+  <iframe src="https://krishnaharshatangirala-triframe-cv-dashboard.hf.space" title="TriFrame dashboard" style="width:100%;height:1700px;border:0;border-radius:8px" loading="lazy"></iframe>
+</section>
