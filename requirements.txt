@@ -11,7 +11,12 @@ onnxruntime
 xgboost-cpu
 timm==1.0.30
 # CPU-only PyTorch. Plain "torch" on Linux pulls a ~2.5 GB CUDA build, and an extra index would shadow other packages under uv.
-# So on Linux the CPU wheel is pinned by direct URL; Windows and macOS wheels from PyPI are already CPU builds.
+# So on Linux the CPU wheels are pinned by direct URL; Windows and macOS wheels from PyPI are already CPU builds.
+# torch and torchvision must come as a matched pair: PyPI's Linux torchvision is built against CUDA torch and fails with
+# "operator torchvision::nms does not exist" next to the CPU torch.
 torch @ https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.12" and platform_machine == "x86_64"
 torch @ https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.13" and platform_machine == "x86_64"
 torch==2.13.0 ; sys_platform != "linux"
+torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.28.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.12" and platform_machine == "x86_64"
+torchvision @ https://download.pytorch.org/whl/cpu/torchvision-0.28.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.13" and platform_machine == "x86_64"
+torchvision==0.28.0 ; sys_platform != "linux"
