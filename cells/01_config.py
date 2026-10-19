@@ -7,9 +7,12 @@ SEED = 11
 HF_USER = "KrishnaHarshaTangirala"
 DATA_REPO = f"{HF_USER}/triframe-us-equities-chart-ohlcv"   # existing private dataset: charts, features, labels, project code
 RUNS_REPO = f"{HF_USER}/triframe-cv-runs"                   # new private dataset: embeddings, results, figures, ledger, logs
-MODEL_REPO = f"{HF_USER}/triframe-cv-model"                 # new private model repo: the frozen bundle the dashboard loads
-SPACE_REPO = f"{HF_USER}/triframe-cv-dashboard"             # Gradio Space that krishnaharsha.com embeds
+MODEL_REPO = f"{HF_USER}/triframe-cv-model" + ("" if QUICK else "-full")   # private model repo: the frozen bundle the dashboard loads
+                                                           # (the full run gets its own repo, so the live dashboard keeps its pilot model until you switch it)
+DEPLOY_HF_SPACE = False    # Gradio Spaces need a paid Hugging Face plan; the dashboard is deployed on Streamlit Cloud instead (see docs/DEPLOY.md)
+SPACE_REPO = f"{HF_USER}/triframe-cv-dashboard"             # only used if DEPLOY_HF_SPACE = True
 SPACE_PRIVATE = False      # a website iframe needs a public Space; the model files stay in the private MODEL_REPO
+DASHBOARD_URL = ""         # the live dashboard address once deployed, e.g. "https://triframe-cv.streamlit.app" (fills the website snippet)
 UPLOAD = True              # push every stage's outputs to Hugging Face
 UPLOAD_EMBEDDINGS = True   # full run = about 20 GB of embeddings; if your Hugging Face storage is too small, set False
                            # (they are then kept on Google Drive instead, which is what lets a run resume after a disconnect)

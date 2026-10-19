@@ -39,7 +39,7 @@ INTRO = r"""
 | 6 | Pick the best model | Pre-registered rule; H2 test; calibration; the NO TRADE thresholds; everything frozen to a config file. |
 | 7 | Test | One look at 2020-2022: metrics with month-block confidence intervals, H1 and H3, what NO TRADE avoids, survivorship sensitivity. |
 | 8 | Model bundle | Saved, checked against the notebook's own predictions and against the training inputs, pushed to a private model repo. |
-| 9 | Dashboard | Gradio app on a Hugging Face Space + the HTML page for krishnaharsha.com ("Computer Vision with Deep Learning Project Dashboard"). |
+| 9 | Dashboard | Checks the dashboard files and writes the HTML block for krishnaharsha.com. The dashboard itself (`streamlit_app.py` in the GitHub repo) is deployed on Streamlit Cloud and loads this run's model bundle. |
 | 10 | Holdout (owner, once) | Off by default. Opens 2023 onward through the project's holdout guard with your key. |
 | 11 | Report | REPORT.md from computed values only; retries any failed upload. |
 
@@ -52,8 +52,8 @@ INTRO = r"""
 """
 
 CELLS = [md(INTRO), code(cell_file("01_config.py")), code(cell_file("02_setup.py")),
-         md("## Code modules\nThe next cells write the four modules: shared inference code, training code, the screenshot reader and the dashboard app."),
-         module_cell("tfcv_core.py"), module_cell("tfcv_train.py"), module_cell("screen_reader.py"), module_cell("app.py"),
+         md("## Code modules\nThe next cells write the modules: shared inference code, training code, the screenshot reader, the shared dashboard logic and the Gradio app."),
+         module_cell("tfcv_core.py"), module_cell("tfcv_train.py"), module_cell("screen_reader.py"), module_cell("dashboard_logic.py"), module_cell("app.py"),
          code(cell_file("04_helpers.py")),
          md("## Stage 1 - load the data\nSealed development rows (2001-10-22 to 2022-12-01) with features and labels. In QUICK mode a fixed random set of stocks is used."),
          code(cell_file("10_stage1.py")),
@@ -71,7 +71,7 @@ CELLS = [md(INTRO), code(cell_file("01_config.py")), code(cell_file("02_setup.py
          code(cell_file("70_stage7.py")),
          md("## Stage 8 - model bundle and parity checks\nThe bundle must reproduce the notebook's test predictions, and the dashboard's input code must reproduce the training inputs exactly."),
          code(cell_file("80_stage8.py")),
-         md("## Stage 9 - dashboard and website page\nPushes the Gradio app to a Hugging Face Space and writes the HTML block for a new page on krishnaharsha.com."),
+         md("## Stage 9 - dashboard files and website page\nThe dashboard is deployed from the GitHub repo on Streamlit Cloud (docs/DEPLOY.md). This stage writes the HTML block for krishnaharsha.com and names the model repo the dashboard must load."),
          code(cell_file("90_stage9.py")),
          md("## Stage 10 - holdout (owner only, once)\nLeave `RUN_HOLDOUT = False` until you are satisfied with the frozen config. Opening it is logged and single-use."),
          code(cell_file("95_stage10.py")),

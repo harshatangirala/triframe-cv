@@ -61,17 +61,18 @@ which is a much weaker signal.
 6. **Checks.** The saved model bundle reproduces the notebook's own test predictions (max difference below 1e-4). The
    dashboard's input code reproduces the training features and charts exactly.
 
-## TradingView screenshot input
+## TradingView screenshot input and the dashboard
 
-The dashboard (`app.py`, Gradio) takes three TradingView screenshots of one stock (1W, 1D, 1H). `screen_reader.py` reads the
+The dashboard (`streamlit_app.py`) takes three TradingView screenshots of one stock (1W, 1D, 1H). `screen_reader.py` reads the
 ticker, the timeframe and the last bar's O/H/L/C from each image with RapidOCR. On 66 real TradingView screenshots it read the
 timeframe and the legend correctly every time, and the true ticker was among its candidates in all 66. The app confirms the
 ticker by matching the legend against Yahoo Finance bars, which also pins the analysis to the screenshot's own date. It then
 rebuilds the exact model inputs and returns expected volatility with a range, the chance of a 10% drawdown, the chance of
-beating the median stock, and a NO TRADE / risk decision with reasons.
+beating the median stock, and a NO TRADE / risk decision with reasons. Typing a ticker works too.
 
-**Hosting status:** the app is built and tested locally but is not online yet. Hugging Face now requires a paid plan for
-Gradio Spaces on its free CPU tier. `web/krishnaharsha_cv_dashboard.html` is the embed block for when it is hosted.
+The trained model bundle stays in a private Hugging Face repo and is loaded at start-up with a read-only token. See
+`docs/DEPLOY.md` to deploy it for free on Streamlit Community Cloud. `app.py` is an equivalent Gradio front end; both use
+`dashboard_logic.py`.
 
 ## Repository layout
 
@@ -83,18 +84,21 @@ Gradio Spaces on its free CPU tier. `web/krishnaharsha_cv_dashboard.html` is the
 | `tfcv_core.py` | Shared inference code: live data, features, chart rendering, model bundle, NO TRADE rule. |
 | `tfcv_train.py` | Training code: fast chart reader, embeddings, PCA, heads, metrics, month-block bootstrap. |
 | `screen_reader.py` | Screenshot reader (ticker, timeframe, last-bar legend). |
-| `app.py` | Gradio dashboard. |
+| `streamlit_app.py` | The dashboard (Streamlit). |
+| `dashboard_logic.py` | Dashboard logic shared by the Streamlit and Gradio front ends: screenshot checks, market data, analysis. |
+| `app.py` | Gradio version of the dashboard. |
 | `tf_render.py`, `feat_visible.py` | The project's chart renderer and numeric-feature code (needed by the modules above). |
 | `make_notebook.py`, `run_local.py` | Build the notebook from `cells/` and run it locally on CPU with stand-in backbones. |
-| `tests/` | Parity, OCR and app tests (they need the private data and screenshots). |
+| `tests/` | Parity, OCR, dashboard-logic and Streamlit tests (most need the private data, bundle or screenshots). |
 | `results/REPORT_pilot_60_stocks.md` | The report the pilot run generated. |
 | `docs/RUNBOOK.md` | How to run the notebook on Colab. |
+| `docs/DEPLOY.md` | How to deploy the dashboard on Streamlit Community Cloud. |
 
 ## Running it
 
 The notebook expects a Colab GPU runtime (an A100 is fastest) and a Hugging Face token with access to the private
 `triframe-us-equities-chart-ohlcv` dataset. See `docs/RUNBOOK.md`. Without that dataset the notebook cannot run.
-`requirements.txt` lists the notebook's packages and `requirements-app.txt` the dashboard's.
+`requirements.txt` lists the dashboard's packages (Streamlit Cloud reads it) and `requirements-notebook.txt` the notebook's.
 
 ## Limits
 

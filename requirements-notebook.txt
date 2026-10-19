@@ -1,0 +1,13 @@
+# notebook (Colab installs these in Stage 0; kept for reference)
+numpy
+pandas
+pyarrow
+scikit-learn
+torch
+timm
+xgboost
+lightgbm
+yfinance
+huggingface_hub>=0.25
+pandas_market_calendars
+matplotlib

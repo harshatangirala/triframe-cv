@@ -40,7 +40,7 @@ if "holdout" in BUNDLE_CFG["metrics"]:
 lines += ["", "## Where everything is",
           f"- Results, embeddings, figures, ledger, logs: https://huggingface.co/datasets/{RUNS_REPO} (private)",
           f"- Model bundle: https://huggingface.co/{MODEL_REPO} (private)",
-          f"- Dashboard: https://huggingface.co/spaces/{SPACE_REPO} (app {SPACE_URL})",
+          f"- Dashboard: {DASHBOARD_URL or 'streamlit_app.py in the GitHub repo (deploy on Streamlit Cloud, docs/DEPLOY.md)'}",
           "", "Limits: 979 survivor US stocks from one vendor; live inputs from Yahoo Finance; research output, not investment advice."]
 REPORT_PATH = os.path.join(RES, f"REPORT_{RUN_TAG}.md")
 open(REPORT_PATH, "w").write("\n".join(lines))

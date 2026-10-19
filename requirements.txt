@@ -1,13 +1,17 @@
-# notebook (Colab installs these in Stage 0)
+# Dashboard dependencies (Streamlit Community Cloud reads this file). The notebook's packages are in requirements-notebook.txt.
+# Select Python 3.12 in the app's Advanced settings.
+streamlit>=1.50
 numpy
 pandas
-pyarrow
-scikit-learn
-torch
-timm
-xgboost
-lightgbm
-yfinance
-huggingface_hub>=0.25
-pandas_market_calendars
-matplotlib
+pillow
+huggingface_hub
+yfinance>=1.0
+rapidocr_onnxruntime==1.4.4
+onnxruntime
+xgboost-cpu
+timm==1.0.30
+# CPU-only PyTorch. Plain "torch" on Linux pulls a ~2.5 GB CUDA build, and an extra index would shadow other packages under uv.
+# So on Linux the CPU wheel is pinned by direct URL; Windows and macOS wheels from PyPI are already CPU builds.
+torch @ https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.12" and platform_machine == "x86_64"
+torch @ https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.13" and platform_machine == "x86_64"
+torch==2.13.0 ; sys_platform != "linux"
