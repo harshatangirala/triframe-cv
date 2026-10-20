@@ -26,6 +26,11 @@ for t in TARGETS:
         _, mu_, sd_ = img_matrix(b, views)
         arrays[f"img_mean|{b}|{''.join(views)}"], arrays[f"img_std|{b}|{''.join(views)}"] = mu_, sd_
 recs = json.load(open(os.path.join(RES, "backbones.json")))
+for b in need:                                              # a fine-tuned backbone ships its weights inside the (private) bundle
+    if b.startswith(T.FT_PREFIX):
+        shutil.copy(T.FT_WEIGHTS[b], os.path.join(B_DIR, recs[b]["weights_file"]))
+LB_COMPACT = [dict(target=r["target"], model=r["model"], kind=r["kind"], condition=r["condition"], metric=r["primary"],
+                   value=r["primary_value"], ci=[r["ci_lo"], r["ci_hi"]], chosen=bool(r["chosen"])) for r in TEST_RESULTS["leaderboard"]]
 versions = {"numpy": np.__version__, "pandas": pd.__version__, "torch": torch.__version__}
 for mod in ("xgboost", "lightgbm", "timm", "sklearn"):
     try:
@@ -37,7 +42,10 @@ BUNDLE_CFG = dict(version="tfcv-1", run_tag=RUN_TAG, created_utc=dt.datetime.now
                   backbones={b: recs[b] for b in need}, rule=RULE_DEPLOY, base_rates=BASE, splits=SPLITS,
                   metrics=dict(val=VAL_SUMMARY, test=TEST_SUMMARY), hypotheses=dict(H1_supported=H1_supported, H2=FZ["H2"]["supported"], H3=H3["supported"]),
                   prereg=FZ["prereg"], frozen_config_sha256=_sha(FROZEN_PATH), versions=versions,
-                  data=dict(universe=len(all_tickers), tickers_used=int(df["ticker"].nunique()), rows=len(df)))
+                  data=dict(universe=len(all_tickers), tickers_used=int(df["ticker"].nunique()), rows=len(df)),
+                  mc={k: MC[k] for k in ("t_df", "low_k", "res_quantiles", "tilt_default", "horizon", "drift", "coverage", "dd_brier")},
+                  risk_quantiles=FZ["risk_quantiles"], reference=dict(FZ["reference"], dd10_rate_test=TEST_DD10_RATE),
+                  leaderboard_test=LB_COMPACT, finetune=dict(FZ["finetune"], verdict=FT_VERDICT, backbones=FT_NAMES))
 json.dump(BUNDLE_CFG, open(os.path.join(B_DIR, "config.json"), "w"), indent=1, default=float)
 np.savez(os.path.join(B_DIR, "arrays.npz"), **{k: np.asarray(v) for k, v in arrays.items()})
 
@@ -72,6 +80,23 @@ if os.path.isdir(f"{DST}/final/1day"):
     print(f"Dashboard input pipeline vs training inputs on {len(pick)} test rows: feature mismatches {fbad}, chart mismatches {tbad}")
     assert fbad == 0 and tbad == 0, "the dashboard would not see what the model was trained on"
 
+# ---- parity 3: the dashboard's own embedding code (CPU, fp32, weights loaded the way the dashboard loads them) reproduces the
+#      notebook's embeddings (GPU, fp16) for the backbones the bundle needs
+if need:
+    pick3 = df[TE].sample(min(4, int(TE.sum())), random_state=SEED)
+    worst = 1.0
+    for _, r in pick3.iterrows():
+        trip3 = st.triplet(r.sample_id)
+        for b in need:
+            e_dash = C.embed_views({v: trip3[v] for v in T.VIEWS}, BUNDLE_CFG["backbones"][b], B_DIR) if globals().get("FACTORY") is None else None
+            if e_dash is None:
+                continue
+            for v in T.VIEWS:
+                e_nb = T.assemble(emb_dir(b), f"{b}|{v}", np.array([r.sample_id]))[0]
+                cos = float(np.dot(e_dash[v], e_nb) / (np.linalg.norm(e_dash[v]) * np.linalg.norm(e_nb) + 1e-12)); worst = min(worst, cos)
+    print(f"Dashboard embedding code vs notebook embeddings ({len(pick3)} test rows x {len(need)} backbones x 3 views): lowest cosine similarity {worst:.5f}")
+    assert worst > 0.995, "the dashboard would compute different image features from the notebook"
+
 # ---- model card (only computed values)
 def _fmt(d):
     return ", ".join(f"{k} {v:.3f}" for k, v in d.items() if isinstance(v, float))
@@ -85,7 +110,7 @@ card += ["", f"H1 (images add to numbers, test): {'supported' if H1_supported el
          f"H3 (abstention helps, test): {'supported' if H3['supported'] else 'not supported'}.", "",
          f"Splits: {SPLITS}. Holdout from {HOLDOUT_START} (see Stage 10 results if run). Configurations tried: {FZ['n_configurations_tried']}.",
          "Limits: 979 survivor US stocks, one data vendor; not investment advice."]
-open(os.path.join(B_DIR, "README.md"), "w").write("\n".join(card))
+open(os.path.join(B_DIR, "README.md"), "w", encoding="utf-8").write("\n".join(card))
 push(B_DIR, "", repo_id=MODEL_REPO, repo_type="model", msg=f"bundle {RUN_TAG}")
 print(f"Bundle written to {B_DIR}" + (f" and pushed to {MODEL_REPO} (private)" if UPLOAD else " (upload off)")
       + f". Backbones needed at inference: {sorted(need) or 'none'}")

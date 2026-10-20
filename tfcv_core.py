@@ -167,13 +167,19 @@ def to_input(img01, mean, std):
 _BACKBONE_CACHE = {}
 
 
-def embed_views(trip, spec):
-    """Frozen-backbone embeddings of the three views (CPU), with the training preprocessing."""
+def embed_views(trip, spec, root=None):
+    """Backbone embeddings of the three views (CPU), with the training preprocessing. A fine-tuned backbone (spec has
+    'weights_file') is built from its architecture and loads its weights from the bundle folder `root`."""
     import torch, timm
-    key = spec["timm_name"]
+    key = spec.get("name", spec["timm_name"])
     if key not in _BACKBONE_CACHE:
         torch.manual_seed(int(spec.get("seed", 0)))
-        m = timm.create_model(spec["timm_name"], pretrained=bool(spec.get("pretrained", True)), num_classes=0, **spec.get("kwargs", {}))
+        if spec.get("weights_file"):
+            from safetensors.torch import load_file
+            m = timm.create_model(spec["timm"], pretrained=False, num_classes=0, **spec.get("kwargs", {}))
+            m.load_state_dict(load_file(os.path.join(root or ".", spec["weights_file"]), device="cpu"))
+        else:
+            m = timm.create_model(spec["timm_name"], pretrained=bool(spec.get("pretrained", True)), num_classes=0, **spec.get("kwargs", {}))
         _BACKBONE_CACHE[key] = m.eval()
     m = _BACKBONE_CACHE[key]
     out = {}
@@ -274,6 +280,124 @@ class Bundle:
         out = {k: float(np.asarray(v)[0]) for k, v in m.items()}
         out["decision"], out["reasons"] = decide(out, self.cfg["rule"])
         return out
+
+
+# ------------------------------------------------------------------------------------------------ Monte Carlo price paths
+MC_DEFAULT = dict(t_df=5.0, low_k=1.0)
+
+
+def _unit_t(rng, df, size):
+    """Student-t shocks scaled to unit variance (df >= 100 means normal)."""
+    if df is None or df >= 100:
+        return rng.standard_normal(size)
+    return rng.standard_t(df, size) * math.sqrt((df - 2.0) / df)
+
+
+def mc_unit_paths(n, t_df, rng, horizon=HORIZON_V, low_k=1.0):
+    """Path shapes with a realised 20-day volatility of exactly 1 (sqrt of the sum of squared daily log returns = 1, the same
+    definition as the logrv20 label). Returns (cum, low), both (n, horizon): the cumulative log return after each session,
+    and that session's intraday low, drawn from the exact minimum of a Brownian bridge between consecutive closes whose
+    variance is low_k times the daily variance (low_k is calibrated on validation data so simulated drawdowns match real ones)."""
+    z = _unit_t(rng, t_df, (n, horizon))
+    z /= np.sqrt((z ** 2).sum(1, keepdims=True))
+    cum = np.cumsum(z, 1)
+    prev = np.hstack([np.zeros((n, 1)), cum[:, :-1]])
+    low = 0.5 * (prev + cum - np.sqrt((cum - prev) ** 2 - 2.0 * low_k / horizon * np.log(rng.random((n, horizon)))))
+    return cum, low
+
+
+def tilt_weights(hit, ret, p_target, iters=80):
+    """The smallest change to equal path weights (minimum relative entropy) such that the weighted share of paths touching a 10%
+    drawdown equals p_target while the mean 20-day return stays what it was (no directional view is added).
+    Weights are proportional to exp(a * hit + b * ret); (a, b) are found by damped Newton steps. Returns (weights, converged)."""
+    h = np.asarray(hit, float); r = np.asarray(ret, float)
+    r = (r - r.mean()) / (r.std() + 1e-12)
+    target = np.array([float(p_target), 0.0])
+    ab = np.zeros(2)
+
+    def moments(ab_):
+        z = ab_[0] * h + ab_[1] * r
+        w = np.exp(z - z.max()); w /= w.sum()
+        return w, np.array([w @ h, w @ r])
+    w, m = moments(ab)
+    for _ in range(iters):
+        g = m - target
+        if np.abs(g).max() < 1e-6:
+            return w, True
+        dh, dr = h - m[0], r - m[1]
+        J = np.array([[w @ (dh * dh), w @ (dh * dr)], [w @ (dh * dr), w @ (dr * dr)]]) + 1e-10 * np.eye(2)
+        step, t = np.linalg.solve(J, g), 1.0
+        while t > 1e-4:
+            w2, m2 = moments(ab - t * step)
+            if np.abs(m2 - target).sum() < np.abs(g).sum():
+                ab, w, m = ab - t * step, w2, m2
+                break
+            t *= 0.5
+        else:
+            break
+    return w, bool(np.abs(m - target).max() < 1e-4)
+
+
+def residual_sampler(vspec, mc=None):
+    """Draws of the volatility model's error (log scale): from the validation quantile table if the bundle has one, else a
+    normal with the validation median and variance."""
+    q = (mc or {}).get("res_quantiles") or vspec.get("res_quantiles")
+    if q:
+        qs = np.asarray(q, float); grid = np.linspace(0.0, 1.0, len(qs))
+        return lambda rng, n: np.interp(rng.random(n), grid, qs)
+    mid, s = float(vspec.get("res_q50", 0.0)), math.sqrt(float(vspec.get("s2", 0.1)))
+    return lambda rng, n: mid + s * rng.standard_normal(n)
+
+
+def wquantile(x, w, qs):
+    """Weighted quantiles of x (n,) or column-wise of x (n, k)."""
+    x = np.asarray(x, float)
+    if x.ndim == 2:
+        return np.column_stack([wquantile(x[:, j], w, qs) for j in range(x.shape[1])])
+    o = np.argsort(x); cw = np.cumsum(w[o]); cw /= cw[-1]
+    return np.interp(qs, cw - 0.5 * w[o] / w.sum(), x[o])
+
+
+def simulate_paths(p0, logrv20, vspec, mc=None, n_paths=5000, p_dd_target=None, seed=0, horizon=HORIZON_V, n_show=40):
+    """Monte Carlo price paths over the model's 20-session horizon.
+    * Each path's volatility = the model's forecast x its validated error (drawn from the validation error distribution), so a
+      less accurate model gives a wider spread of paths.
+    * Daily shocks are fat-tailed (Student-t, tail shape chosen on validation data) and scaled so the path's realised volatility
+      equals its drawn volatility (the label's own definition). No drift: the direction model has no reliable edge.
+    * Intraday lows come from the exact Brownian-bridge minimum (range calibrated on validation data), because the drawdown
+      label uses daily lows.
+    * p_dd_target: reweight the paths (smallest possible change, mean return unchanged) so the share touching a 10% drawdown
+      equals the calibrated drawdown model's probability.
+    Returns a dict of arrays and summary numbers."""
+    mc = {**MC_DEFAULT, **(mc or {})}
+    rng = np.random.default_rng(seed)
+    eps = residual_sampler(vspec, mc)(rng, n_paths)
+    rv = np.exp(float(logrv20) + eps)
+    cum, low = mc_unit_paths(n_paths, mc["t_df"], rng, horizon, mc["low_k"])
+    prices = float(p0) * np.exp(np.hstack([np.zeros((n_paths, 1)), rv[:, None] * cum]))
+    lows = float(p0) * np.exp(rv[:, None] * low)
+    worst = lows.min(1) / float(p0) - 1
+    hit = worst <= -0.10
+    p_sim = float(hit.mean())
+    ret = prices[:, -1] / float(p0) - 1
+    w = np.full(n_paths, 1.0 / n_paths)
+    tilted = False
+    if p_dd_target is not None and 0 < p_sim < 1:
+        w2, ok = tilt_weights(hit, ret, float(np.clip(p_dd_target, 1e-4, 1 - 1e-4)))
+        if ok:
+            w, tilted = w2, True
+    qs = [0.05, 0.25, 0.5, 0.75, 0.95]
+    fan = wquantile(prices, w, qs)                                  # (5, horizon + 1)
+    q05 = float(wquantile(ret, w, [0.05])[0])
+    tail = ret <= q05
+    show = rng.choice(n_paths, size=min(n_show, n_paths), replace=False, p=w / w.sum())
+    return dict(p0=float(p0), days=np.arange(horizon + 1), fan=fan, fan_q=qs, sample_paths=prices[show], ret=ret, w=w,
+                p_dd_sim=p_sim, p_dd=float(np.sum(w * hit)), tilted=tilted, ess=float(1.0 / np.sum(w ** 2)),
+                ret_q05=q05, ret_q50=float(wquantile(ret, w, [0.5])[0]), ret_q95=float(wquantile(ret, w, [0.95])[0]),
+                p_up=float(np.sum(w * (ret > 0))), p_down10=float(np.sum(w * (ret <= -0.10))),
+                es95=float(-np.sum(w[tail] * ret[tail]) / max(np.sum(w[tail]), 1e-12)), var95=-q05,
+                price_q05=float(p0) * (1 + q05), price_q95=float(p0) * (1 + float(wquantile(ret, w, [0.95])[0])),
+                mean_ret=float(np.sum(w * ret)), n_paths=int(n_paths), t_df=float(mc["t_df"]), low_k=float(mc["low_k"]))
 
 
 def decide(out, rule):

@@ -15,9 +15,9 @@ if "lgbm" in heads:
     req.append("lightgbm")
 if BUNDLE_CFG["backbones"]:                                   # only if a chosen model uses chart images
     req += ["--extra-index-url https://download.pytorch.org/whl/cpu", "torch", f"timm=={BUNDLE_CFG['versions'].get('timm', '')}".rstrip("=")]
-open(os.path.join(SPACE_DIR, "requirements.txt"), "w").write("\n".join(req) + "\n")
-open(os.path.join(SPACE_DIR, "packages.txt"), "w").write("libgl1\nlibglib2.0-0\n")
-open(os.path.join(SPACE_DIR, "README.md"), "w").write(
+open(os.path.join(SPACE_DIR, "requirements.txt"), "w", encoding="utf-8").write("\n".join(req) + "\n")
+open(os.path.join(SPACE_DIR, "packages.txt"), "w", encoding="utf-8").write("libgl1\nlibglib2.0-0\n")
+open(os.path.join(SPACE_DIR, "README.md"), "w", encoding="utf-8").write(
     "---\ntitle: Computer Vision with Deep Learning Project Dashboard\nemoji: 📈\ncolorFrom: gray\ncolorTo: blue\nsdk: gradio\n"
     f"sdk_version: {GRADIO_VERSION}\npython_version: \"3.11\"\napp_file: app.py\npinned: false\n"
     "short_description: Three chart screenshots to volatility and risk.\n---\n\n"
@@ -46,13 +46,14 @@ page = f"""<!-- Computer Vision with Deep Learning Project Dashboard: paste into
 <section style="max-width:1100px;margin:0 auto;padding:24px 16px;font-family:system-ui,Segoe UI,Arial,sans-serif;color:#1d2533">
   <h1 style="font-size:32px;margin:0 0 12px">Computer Vision with Deep Learning Project Dashboard</h1>
   <p style="font-size:16px;line-height:1.6">TriFrame tests whether weekly, daily and hourly chart images add information about a US stock's
-  next-20-day volatility, drawdown risk and 5-day relative direction beyond plain numbers from the same price history. Seven frozen,
-  ImageNet-pretrained vision models were compared with a numerical baseline on 979 US stocks, with chronological training,
+  next-20-day volatility, drawdown risk and 5-day relative direction beyond plain numbers from the same price history. Seven ImageNet-pretrained
+  vision models (frozen and fine-tuned) were compared with a numerical baseline on {df['ticker'].nunique()} of 979 US stocks, with chronological training,
   validation and test periods and a sealed final holdout.</p>
-  <p style="font-size:16px;line-height:1.6"><strong>How to use:</strong> upload three TradingView screenshots of one stock (1W, 1D and 1H).
-  The app reads the ticker and the last bar of each picture, checks them against market data, rebuilds the exact inputs the model
-  was trained on and returns expected volatility, the chance of a 10% drawdown, the chance of beating the median stock over five
-  days, and a NO TRADE decision (the default).</p>
+  <p style="font-size:16px;line-height:1.6"><strong>How to use:</strong> choose 1 to 4 companies and upload three TradingView
+  screenshots of each (1W, 1D and 1H). The app reads the ticker and the last bar of each picture, checks them against market data,
+  rebuilds the exact inputs the models were trained on and returns expected volatility, the chance of a 10% drawdown, the chance of
+  beating the median stock over five days, a risk tier, a Monte Carlo simulation of the next 20 trading days and a plain-language
+  explanation, then ranks the companies from riskiest to safest. NO TRADE is the default decision.</p>
   <p style="font-size:14px;color:#555">Test-period results (2020-2022): volatility R&sup2; {tm['V'].get('R2', float('nan')):.2f};
   drawdown AUC {tm['D10'].get('AUC', float('nan')):.2f}; direction AUC {tm['O5'].get('AUC', float('nan')):.3f}.
   Research output, not investment advice.</p>
@@ -60,7 +61,7 @@ page = f"""<!-- Computer Vision with Deep Learning Project Dashboard: paste into
 </section>
 """
 WEB = os.path.join(WORK, "web", "krishnaharsha_cv_dashboard.html")
-open(WEB, "w").write(page)
+open(WEB, "w", encoding="utf-8").write(page)
 shutil.copy(WEB, os.path.join(DRIVE_DIR, os.path.basename(WEB)))
 push(WEB, "web/krishnaharsha_cv_dashboard.html")
 print(f"Website snippet: {WEB} (also on Drive: {DRIVE_DIR}).")

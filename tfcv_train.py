@@ -17,8 +17,9 @@ class FastTriplets:
     def __init__(self, st):
         self.st = st
 
-    def read(self, g):
-        """g: rows of ONE ticker from the store's index (columns ticker, sample_id, src, shard_row, patched)."""
+    def read_packed(self, g):
+        """g: rows of ONE ticker from the store's index (columns ticker, sample_id, src, shard_row, patched).
+        Returns the packed 1-bit triplets (n, TRIPLET_BYTES) in g's order."""
         t = g["ticker"].iloc[0]
         n = len(g)
         buf = np.empty((n, RN.TRIPLET_BYTES), np.uint8)
@@ -31,7 +32,12 @@ class FastTriplets:
         if pm.any():
             prow = self.st._patch.loc[g["sample_id"].values[pm], "patch_row"].values.astype(int)
             buf[pm] = np.asarray(self.st._shard("cache_patch_r11", t)[prow])
-        bits = np.unpackbits(buf, axis=1)[:, :RN.TRIPLET_BITS]
+        return buf
+
+    def read(self, g):
+        """g: rows of ONE ticker from the store's index. Returns {view: (n, 128, width) uint8 0/1 images}."""
+        n = len(g)
+        bits = np.unpackbits(self.read_packed(g), axis=1)[:, :RN.TRIPLET_BITS]
         return {v: bits[:, _OFF[v]:_OFF[v] + _SHAPES[v][0] * _SHAPES[v][1]].reshape(n, *_SHAPES[v]) for v in VIEWS}
 
     def parity(self, rows, n=300, seed=0):
@@ -67,24 +73,100 @@ BACKBONES = {
 PRETRAINED = [b for b, s in BACKBONES.items() if s.get("pretrained", True)]
 RANDOM = [b for b in BACKBONES if b not in PRETRAINED]
 
+# plain-language facts for the model cards (family, what the network is, who introduced it)
+BACKBONE_INFO = {
+    "resnet18": ("CNN", "ResNet-18", "18-layer residual convolutional network (He et al., 2016)"),
+    "efficientnet_b0": ("CNN", "EfficientNet-B0", "compound-scaled convolutional network built for efficiency (Tan & Le, 2019)"),
+    "vit_base_patch16_224": ("Transformer", "ViT-B/16", "Vision Transformer: the image is cut into 16x16 patches that attend to each other (Dosovitskiy et al., 2021)"),
+    "convnext_tiny": ("CNN", "ConvNeXt-Tiny", "a ResNet modernised with transformer-era design choices (Liu et al., 2022)"),
+    "swin_tiny_patch4_window7_224": ("Transformer", "Swin-T", "hierarchical transformer that attends within shifted windows (Liu et al., 2021)"),
+    "vit_small_patch14_dinov2": ("Transformer", "DINOv2 ViT-S/14", "Vision Transformer trained without labels by self-distillation (Oquab et al., 2023)"),
+    "mobilenetv3_large_100": ("CNN", "MobileNetV3-Large", "lightweight network designed for phones (Howard et al., 2019)"),
+    "resnet18_random_s0": ("Control", "ResNet-18 (random weights, seed 0)", "same architecture as ResNet-18 but never trained: a control"),
+    "resnet18_random_s1": ("Control", "ResNet-18 (random weights, seed 1)", "same architecture as ResNet-18 but never trained: a control"),
+    "resnet18_random_s2": ("Control", "ResNet-18 (random weights, seed 2)", "same architecture as ResNet-18 but never trained: a control"),
+}
+
+
+def pretrain_data(timm_name, pretrained=True):
+    """The pretraining dataset behind a timm weight tag, in words."""
+    if not pretrained:
+        return "none (random weights)"
+    tag = timm_name.split(".", 1)[1] if "." in timm_name else ""
+    if "lvd142m" in tag:
+        return "LVD-142M, 142 million unlabelled images (self-supervised)"
+    if "in21k_ft_in1k" in tag:
+        return "ImageNet-21k, then fine-tuned on ImageNet-1k"
+    if "in12k_ft_in1k" in tag:
+        return "ImageNet-12k, then fine-tuned on ImageNet-1k"
+    if "in1k" in tag:
+        return "ImageNet-1k (1.28 million labelled photos, 1,000 classes)"
+    return tag or "ImageNet"
+
+
+def display_name(name):
+    """'ft_convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned)'."""
+    base = base_name(name)
+    nm = BACKBONE_INFO.get(base, ("", base, ""))[1]
+    return f"{nm} (fine-tuned)" if name.startswith(FT_PREFIX) else nm
+
+
+# fine-tuned backbones are named "ft_<backbone>" and load their weights from FT_WEIGHTS (filled by the notebook's Stage 5F)
+FT_PREFIX = "ft_"
+FT_WEIGHTS = {}
+
+
+def base_name(name):
+    return name[len(FT_PREFIX):] if name.startswith(FT_PREFIX) else name
+
 
 def build_backbone(name, device, factory=None):
-    """Returns (model, mean, std, record). factory(name, spec) may replace timm (used only for the local CPU test)."""
+    """Returns (model, mean, std, record). factory(name, spec) may replace timm (used only for the local CPU test).
+    A name 'ft_<backbone>' builds <backbone> and loads its fine-tuned weights from FT_WEIGHTS[name]."""
     import torch
-    spec = BACKBONES[name]
+    base = base_name(name)
+    ft = name != base
+    spec = BACKBONES[base]
     if factory is not None:
-        return factory(name, spec, device)
-    import timm
-    torch.manual_seed(int(spec.get("seed", 0)))
-    m = timm.create_model(spec["timm"], pretrained=bool(spec.get("pretrained", True)), num_classes=0, **spec.get("kwargs", {}))
-    m = m.to(device).eval()
-    cfg = timm.data.resolve_data_config({}, model=m)
-    pc = getattr(m, "pretrained_cfg", {}) or {}
-    tag = pc.get("tag") if spec.get("pretrained", True) else None
-    rec = dict(name=name, timm=spec["timm"], timm_name=(f"{spec['timm']}.{tag}" if tag else spec["timm"]),
-               pretrained=bool(spec.get("pretrained", True)), seed=int(spec.get("seed", 0)), kwargs=spec.get("kwargs", {}),
-               mean=list(cfg["mean"]), std=list(cfg["std"]), hf_hub_id=pc.get("hf_hub_id"), timm_version=timm.__version__)
-    return m, torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1), torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1), rec
+        m, mu, sd, rec = factory(base, spec, device)
+    else:
+        import timm
+        torch.manual_seed(int(spec.get("seed", 0)))
+        m = timm.create_model(spec["timm"], pretrained=bool(spec.get("pretrained", True)) and not ft, num_classes=0, **spec.get("kwargs", {}))
+        m = m.to(device).eval()
+        cfg = timm.data.resolve_data_config({}, model=m)
+        pc = getattr(m, "pretrained_cfg", {}) or {}
+        tag = pc.get("tag") if spec.get("pretrained", True) else None
+        rec = dict(name=base, timm=spec["timm"], timm_name=(f"{spec['timm']}.{tag}" if tag else spec["timm"]),
+                   pretrained=bool(spec.get("pretrained", True)), seed=int(spec.get("seed", 0)), kwargs=spec.get("kwargs", {}),
+                   mean=list(cfg["mean"]), std=list(cfg["std"]), hf_hub_id=pc.get("hf_hub_id"), timm_version=timm.__version__)
+        mu = torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1)
+        sd = torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1)
+    if ft:
+        from safetensors.torch import load_file
+        m.load_state_dict(load_file(FT_WEIGHTS[name], device="cpu"))
+        m = m.to(device).eval()
+        rec = dict(rec, name=name, base=base, finetuned=True, weights_file=os.path.basename(FT_WEIGHTS[name]))
+    rec["n_params"] = int(sum(p.numel() for p in m.parameters()))
+    return m, mu, sd, rec
+
+
+def throughput(m, mu, sd, device, n_img=256, batch=64):
+    """Inference speed (images per second) of a backbone on this device, with the same preprocessing and precision as the
+    embedding stage."""
+    import torch
+    x = torch.rand(batch, 3, 224, 224, device=device)
+    cuda = str(device).startswith("cuda")
+    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=cuda):
+        m((x - mu) / sd)                                           # warm-up
+        if cuda:
+            torch.cuda.synchronize()
+        t0 = time.time(); done = 0
+        while done < n_img:
+            m((x - mu) / sd); done += batch
+        if cuda:
+            torch.cuda.synchronize()
+    return done / max(time.time() - t0, 1e-9)
 
 
 def extract_embeddings(st, rows, names, out_dir, device, chunk_tickers=40, batch=384, factory=None,
@@ -100,6 +182,9 @@ def extract_embeddings(st, rows, names, out_dir, device, chunk_tickers=40, batch
     models, records = {}, {}
     for nm in names:
         m, mu, sd, rec = build_backbone(nm, device, factory)
+        with torch.no_grad():
+            rec["emb_dim"] = int(m(torch.zeros(2, 3, 224, 224, device=device)).shape[1])
+        rec["infer_img_per_s"] = float(throughput(m, mu, sd, device))
         models[nm] = (m, mu, sd); records[nm] = rec
     reader = FastTriplets(st)
     use_amp = str(device).startswith("cuda")
@@ -152,6 +237,168 @@ def extract_embeddings(st, rows, names, out_dir, device, chunk_tickers=40, batch
         if on_chunk is not None:
             on_chunk(path)
     return records
+
+
+# ===================================================================================== 2b. fine-tuning (end to end, multi-task)
+def packed_rows(st, rows):
+    """Packed 1-bit chart triplets (n, TRIPLET_BYTES) for index rows, in the order of rows (about 17.8 kB per chart set)."""
+    reader = FastTriplets(st)
+    out = np.empty((len(rows), RN.TRIPLET_BYTES), np.uint8)
+    tick = rows["ticker"].values
+    for t in pd.unique(tick):
+        sel = np.flatnonzero(tick == t)
+        out[sel] = reader.read_packed(rows.iloc[sel])
+    return out
+
+
+def views_from_packed(buf, device, resize=True):
+    """Packed triplets (B, TRIPLET_BYTES) -> {view: (B, 1, 224, 224) float tensor in [0, 1]} on device, resized exactly as
+    in extract_embeddings (bilinear, antialiased). resize=False returns the raw 0/1 images (B, 1, 128, width)."""
+    import torch, torch.nn.functional as F
+    b = torch.from_numpy(np.ascontiguousarray(buf)).to(device)
+    shifts = torch.arange(7, -1, -1, device=device, dtype=torch.uint8)
+    bits = ((b.unsqueeze(-1) >> shifts) & 1).reshape(b.shape[0], -1)[:, :RN.TRIPLET_BITS]
+    out = {}
+    for v in VIEWS:
+        h, w = _SHAPES[v]
+        x = bits[:, _OFF[v]:_OFF[v] + h * w].reshape(-1, 1, h, w).float()
+        out[v] = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False, antialias=True) if resize else x
+    return out
+
+
+def _ft_net(backbone, emb_dim, n_num, hidden=256, drop=0.2):
+    """The fine-tuning network: ONE backbone embeds each of the three views; the three embeddings and the 33 standardised
+    numbers feed a small shared head with three outputs (volatility, direction logit, drawdown logit)."""
+    import torch, torch.nn as nn
+
+    class TriFrameNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = backbone
+            self.trunk = nn.Sequential(nn.LayerNorm(3 * emb_dim + n_num), nn.Linear(3 * emb_dim + n_num, hidden), nn.GELU(), nn.Dropout(drop))
+            self.out = nn.Linear(hidden, 3)
+
+        def forward(self, xs, xnum):
+            n = xnum.shape[0]
+            e = self.backbone(torch.cat(xs, 0)).float()
+            e = torch.cat(e.split(n, 0), 1)
+            return self.out(self.trunk(torch.cat([e, xnum], 1)))
+    return TriFrameNet()
+
+
+def _ft_losses(out, ys):
+    """Per-task losses with missing labels masked: MSE on standardised volatility, plain binary cross-entropy on the two
+    probability targets (no label smoothing, no focal loss: project rule)."""
+    import torch, torch.nn.functional as F
+    terms = []
+    for k, y in enumerate(ys):
+        m = torch.isfinite(y)
+        if not bool(m.any()):
+            terms.append(out[:, k].sum() * 0.0); continue
+        p = out[m, k].float()
+        terms.append(F.mse_loss(p, y[m]) if k == 0 else F.binary_cross_entropy_with_logits(p, y[m]))
+    return terms
+
+
+def finetune(name, packed, xnum, ys, train_idx, val_idx, device, epochs=4, batch=64, lr_backbone=3e-5, lr_head=1e-3,
+             weight_decay=0.05, patience=1, seed=11, factory=None, log=print):
+    """Fine-tunes one pretrained backbone end to end on TRAINING rows only, with early stopping on the VALIDATION loss.
+    packed: (n, TRIPLET_BYTES) chart sets; xnum: (n, 33) standardised numbers; ys: (yV, yO5, yD10) arrays of length n (NaN =
+    missing); train_idx / val_idx index into those arrays. No augmentation (flips or crops would change what a chart means).
+    Returns (backbone with the best-epoch weights, eval mode), mean, std, record, history (DataFrame), and the network's own
+    validation predictions at the best epoch {V: logrv20, O5: prob, D10: prob}."""
+    import torch
+    torch.manual_seed(seed); rng = np.random.default_rng(seed)
+    m, mu, sd, rec = build_backbone(name, device, factory)
+    with torch.no_grad():
+        dim = int(m(torch.zeros(2, 3, 224, 224, device=device)).shape[1])
+    net = _ft_net(m, dim, xnum.shape[1]).to(device)
+    yv = np.asarray(ys[0], float)
+    v_mu, v_sd = float(np.nanmean(yv[train_idx])), float(np.nanstd(yv[train_idx]))
+    Yt = [(yv - v_mu) / v_sd, np.asarray(ys[1], float), np.asarray(ys[2], float)]
+    cuda = str(device).startswith("cuda")
+    amp_dtype = torch.bfloat16 if (cuda and torch.cuda.is_bf16_supported()) else torch.float16
+    scaler = torch.amp.GradScaler("cuda", enabled=cuda and amp_dtype == torch.float16)
+    head_params = list(net.trunk.parameters()) + list(net.out.parameters())
+    opt = torch.optim.AdamW([{"params": m.parameters(), "lr": lr_backbone}, {"params": head_params, "lr": lr_head}],
+                            weight_decay=weight_decay)
+    steps = epochs * math.ceil(len(train_idx) / batch); warm = max(1, int(0.05 * steps))
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / warm) * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(1.0, s / steps)))))
+
+    def prep(ii):
+        vs = views_from_packed(packed[ii], device)
+        xs = [(vs[v].expand(-1, 3, -1, -1) - mu) / sd for v in VIEWS]
+        yb = [torch.as_tensor(Yt[k][ii], dtype=torch.float32, device=device) for k in range(3)]
+        return xs, torch.as_tensor(xnum[ii], dtype=torch.float32, device=device), yb
+
+    def predict(idx):
+        net.eval(); outs = []
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=cuda):
+            for b0 in range(0, len(idx), 2 * batch):
+                xs, xn, _ = prep(idx[b0:b0 + 2 * batch])
+                outs.append(net(xs, xn).float().cpu().numpy())
+        return np.concatenate(outs) if outs else np.zeros((0, 3))
+
+    def val_loss(o):
+        tot = 0.0
+        for k in range(3):
+            y = Yt[k][val_idx]; ok = np.isfinite(y)
+            if ok.any():
+                p = o[ok, k]
+                tot += float(np.mean((p - y[ok]) ** 2)) if k == 0 else float(np.mean(np.logaddexp(0, p) - y[ok] * p))
+        return tot
+
+    hist, best, bad, best_state, best_out = [], np.inf, 0, None, None
+    t_start = time.time(); n_img = 0
+    for ep in range(1, epochs + 1):
+        net.train(); t0 = time.time(); run = []
+        order = rng.permutation(train_idx)
+        for b0 in range(0, len(order), batch):
+            ii = order[b0:b0 + batch]
+            if len(ii) < 2:
+                continue
+            xs, xn, yb = prep(ii)
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=cuda):
+                out = net(xs, xn)
+            loss = sum(_ft_losses(out, yb))
+            opt.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+            scaler.step(opt); scaler.update(); sched.step()
+            run.append(float(loss.detach())); n_img += 3 * len(ii)
+        o = predict(val_idx)
+        vl = val_loss(o)
+        yva = yv[val_idx]; okv = np.isfinite(yva)
+        r2v = r2(yva[okv], o[okv, 0] * v_sd + v_mu) if okv.sum() > 2 else float("nan")
+        yd = Yt[2][val_idx]; okd = np.isfinite(yd)
+        aucd = auc(yd[okd], o[okd, 2]) if okd.sum() > 2 and 0 < np.nanmean(yd[okd]) < 1 else float("nan")
+        hist.append(dict(backbone=name, epoch=ep, train_loss=float(np.mean(run)) if run else float("nan"), val_loss=vl,
+                         val_R2_V=r2v, val_AUC_D10=aucd, seconds=time.time() - t0))
+        log(f"   {name} epoch {ep}/{epochs}: train loss {hist[-1]['train_loss']:.4f} | val loss {vl:.4f} | "
+            f"val R2 (volatility) {r2v:.3f} | val AUC (drawdown) {aucd:.3f} | {time.time() - t0:.0f}s")
+        if vl < best - 1e-5:
+            best, bad, best_out = vl, 0, o
+            best_state = {k: v.detach().cpu().clone() for k, v in m.state_dict().items()}
+        else:
+            bad += 1
+            if bad > patience:
+                break
+    m.load_state_dict(best_state)
+    m.eval()
+    best_ep = int(min(hist, key=lambda h: h["val_loss"])["epoch"])
+    secs = time.time() - t_start
+    rec = dict(rec, ft=dict(epochs_run=len(hist), best_epoch=best_ep, minutes=secs / 60, train_img_per_s=n_img / max(secs, 1e-9),
+                            n_train=int(len(train_idx)), n_val=int(len(val_idx)), lr_backbone=lr_backbone, lr_head=lr_head,
+                            batch=batch, weight_decay=weight_decay, v_mean=v_mu, v_std=v_sd))
+    e2e = {"V": best_out[:, 0] * v_sd + v_mu, "O5": 1 / (1 + np.exp(-best_out[:, 1])), "D10": 1 / (1 + np.exp(-best_out[:, 2]))}
+    return m, mu, sd, rec, pd.DataFrame(hist), e2e
+
+
+def save_backbone(m, path):
+    """Backbone weights as .safetensors (plain tensors, no pickle)."""
+    from safetensors.torch import save_file
+    save_file({k: v.detach().cpu().contiguous().clone() for k, v in m.state_dict().items()}, path)
 
 
 def assemble(out_dir, key, order_ids):
@@ -330,6 +577,99 @@ def logloss(y, p):
 
 def brier(y, p):
     return float(np.mean((np.asarray(p, float) - np.asarray(y, float)) ** 2))
+
+
+def rmse(y, p):
+    return float(np.sqrt(np.mean((np.asarray(y, float) - np.asarray(p, float)) ** 2)))
+
+
+def spearman(y, p):
+    return float(pd.Series(np.asarray(y, float)).rank().corr(pd.Series(np.asarray(p, float)).rank()))
+
+
+def avg_precision(y, p):
+    from sklearn.metrics import average_precision_score
+    return float(average_precision_score(np.asarray(y, int), np.asarray(p, float)))
+
+
+def accuracy(y, p):
+    return float(((np.asarray(p, float) > 0.5) == (np.asarray(y, float) > 0.5)).mean())
+
+
+def board_metrics(task, y, p, dates, base=None, s2=None):
+    """The leaderboard's metric set. Regression: R2, within-month R2, QLIKE, MAE, RMSE, Spearman. Classification: AUC,
+    average precision, accuracy, log loss, Brier skill score, ECE."""
+    y = np.asarray(y, float); p = np.asarray(p, float)
+    if task == "reg":
+        c, _ = month_codes(dates)
+        s2 = float(np.var(y - p)) if s2 is None else s2
+        return dict(R2=r2(y, p), wmR2=wm_r2(y, p, c), QLIKE=qlike(y, p, s2), MAE=float(np.mean(np.abs(y - p))), RMSE=rmse(y, p),
+                    Spearman=spearman(y, p))
+    base = float(np.mean(y)) if base is None else base
+    return dict(AUC=auc(y, p), AP=avg_precision(y, p), ACC=accuracy(y, p), logloss=logloss(y, p),
+                BSS=1 - brier(y, p) / brier(y, np.full(len(y), base)), ECE=ece(y, p))
+
+
+# ===================================================================================== 4b. Monte Carlo calibration (notebook side)
+def mc_universal(n, t_df, res_sampler, seed=0, horizon=20, low_k=1.0):
+    """Volatility-free draws of the dashboard's Monte Carlo model (tfcv_core.simulate_paths):
+    U = 20-day log return per unit of forecast volatility, D = lowest intraday log price per unit of forecast volatility.
+    For a forecast x_hat (log 20-day volatility): log return = exp(x_hat) * U and log(low / start) = exp(x_hat) * D."""
+    import tfcv_core as C
+    rng = np.random.default_rng(seed)
+    eps = res_sampler(rng, n)
+    cum, low = C.mc_unit_paths(n, t_df, rng, horizon, low_k)
+    s = np.exp(eps)
+    return s * cum[:, -1], s * low.min(1)
+
+
+def _tilt_rows(H, R, p, iters=40):
+    """tfcv_core.tilt_weights for many rows at once: H (rows, draws) drawdown hits, R (rows, draws) 20-day returns,
+    p (rows,) target drawdown chances. Keeps each row's mean return; returns the weights (rows, draws)."""
+    h = H.astype(np.float64)
+    r = (R - R.mean(1, keepdims=True)) / (R.std(1, keepdims=True) + 1e-12)
+    a = np.zeros(len(p)); b = np.zeros(len(p))
+    for _ in range(iters):
+        z = a[:, None] * h + b[:, None] * r
+        w = np.exp(z - z.max(1, keepdims=True)); w /= w.sum(1, keepdims=True)
+        mh, mr = (w * h).sum(1), (w * r).sum(1)
+        g1, g2 = mh - p, mr
+        if max(np.abs(g1).max(), np.abs(g2).max()) < 1e-6:
+            break
+        dh, dr = h - mh[:, None], r - mr[:, None]
+        j11, j12, j22 = (w * dh * dh).sum(1) + 1e-10, (w * dh * dr).sum(1), (w * dr * dr).sum(1) + 1e-10
+        det = j11 * j22 - j12 ** 2
+        a = np.clip(a - np.clip((j22 * g1 - j12 * g2) / det, -2, 2), -30, 30)
+        b = np.clip(b - np.clip((-j12 * g1 + j11 * g2) / det, -2, 2), -30, 30)
+    return w
+
+
+def mc_scores(U, D, xhat, logret, dd_hit, p_model=None, levels=(0.5, 0.8, 0.9, 0.95), chunk=200, n_tilt=6000):
+    """How well the simulation describes real outcomes. For each row: the probability integral transform (PIT) of the realised
+    20-day log return, and the simulated chance of a 10% drawdown. With p_model (the calibrated drawdown model), the paths
+    are reweighted per row exactly as the dashboard's 'match the drawdown model' option does (drawdown share = p_model, mean
+    return unchanged). Returns {coverage at each level, mean absolute coverage error, PIT histogram, drawdown Brier}."""
+    xhat = np.asarray(xhat, float); scale = np.exp(xhat)
+    u_row = np.asarray(logret, float) / scale
+    c_row = math.log(0.9) / scale
+    if p_model is None:
+        pit = np.searchsorted(np.sort(U), u_row, side="right") / len(U)
+        p_dd = np.searchsorted(np.sort(D), c_row, side="right") / len(D)
+    else:
+        Ut, Dt = U[:n_tilt], D[:n_tilt]
+        pit = np.empty(len(xhat)); p_dd = np.asarray(p_model, float).copy()
+        for a in range(0, len(xhat), chunk):
+            sl = slice(a, a + chunk)
+            H = Dt[None, :] <= c_row[sl, None]
+            R = np.expm1(scale[sl, None] * Ut[None, :])
+            w = _tilt_rows(H, R, np.clip(p_dd[sl], 1e-4, 1 - 1e-4))
+            pit[sl] = (w * (Ut[None, :] <= u_row[sl, None])).sum(1)
+    cov = {f"{int(l * 100)}%": float(np.mean((pit >= (1 - l) / 2) & (pit <= 1 - (1 - l) / 2))) for l in levels}
+    err = float(np.mean([abs(cov[f"{int(l * 100)}%"] - l) for l in levels]))
+    hist = np.histogram(pit, bins=10, range=(0, 1))[0] / max(len(pit), 1)
+    ok = np.isfinite(dd_hit)
+    return dict(coverage=cov, coverage_error=err, pit_hist=hist.tolist(), mean_pit=float(np.mean(pit)),
+                dd_brier=brier(np.asarray(dd_hit)[ok], p_dd[ok]), dd_rate=float(np.mean(np.asarray(dd_hit)[ok])), dd_mean_pred=float(np.mean(p_dd[ok])))
 
 
 def ece(y, p, bins=10):

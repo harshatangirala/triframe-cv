@@ -1,6 +1,7 @@
 # Dashboard dependencies (Streamlit Community Cloud reads this file). The notebook's packages are in requirements-notebook.txt.
 # Select Python 3.12 in the app's Advanced settings.
 streamlit>=1.50
+plotly>=6.0
 numpy
 pandas
 pillow

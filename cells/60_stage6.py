@@ -3,8 +3,15 @@ import matplotlib; import matplotlib.pyplot as plt
 t0 = time.time()
 METRIC_FN = {"V": T.r2, "O5": T.logloss, "D10": T.brier}
 PREREG = {
-    "selection": "Per target the best validation score wins (V: R2, O5: log loss, D10: Brier). A model that uses chart images is "
-                 "chosen only if its validation gain over the best numbers-only model has a month-block 95% CI that excludes 0.",
+    "selection": "Per target the best validation score wins (V: R2, O5: log loss, D10: Brier). Candidates: numbers only, and numbers "
+                 "and/or images from every pretrained backbone, frozen or fine-tuned (Stage 5F), on equal terms. A model that uses chart "
+                 "images is chosen only if its validation gain over the best numbers-only model has a month-block 95% CI that excludes 0.",
+    "finetune": "Fine-tuning (Stage 5F): each pretrained backbone is trained end to end on training rows only (shared backbone over the "
+                "three views + 33 numbers, multi-task loss: MSE on volatility, plain cross-entropy on direction and drawdown; AdamW, "
+                "cosine schedule, no augmentation), with early stopping on the validation loss; its embeddings then use the same PCA and heads.",
+    "monte_carlo": "Stage 7M: the simulation's tail shape and intraday-low range are chosen on validation (return coverage, then drawdown "
+                   "Brier); the dashboard matches the drawdown model by default unless that worsens the validation coverage error by "
+                   "more than 1 percentage point. Checked once on the test years.",
     "H1": "On the test years, the best numbers+images model (chosen on validation among pretrained backbones) beats the numbers-only "
           "model: the 95% CI of delta-R2 (volatility) or delta-AUC (direction) lies above 0.",
     "H2": "On validation, image-only volatility R2 differs between at least two pretrained backbones (pairwise month-block "
@@ -108,7 +115,8 @@ def _vp(t):
 CAL = {t: T.isotonic_arrays(_vp(t), Y[t][VA & OK[t]]) for t in ("O5", "D10")}
 cal = lambda t, p: np.interp(p, CAL[t]["x"], CAL[t]["y"])
 res = Y["V"][VA & OK["V"]] - _vp("V")
-VRES = dict(res_q10=float(np.quantile(res, 0.10)), res_q50=float(np.quantile(res, 0.50)), res_q90=float(np.quantile(res, 0.90)), s2=float(np.var(res)))
+VRES = dict(res_q10=float(np.quantile(res, 0.10)), res_q50=float(np.quantile(res, 0.50)), res_q90=float(np.quantile(res, 0.90)), s2=float(np.var(res)),
+            res_quantiles=[float(q) for q in np.quantile(res, np.linspace(0, 1, 101))])      # the error distribution the simulation draws from
 pO5_va = cal("O5", _vp("O5")); yO5_va = Y["O5"][VA & OK["O5"]]
 abst_va, THR = T.abstention_table(pO5_va, yO5_va)
 usable = abst_va[(abst_va.coverage_target < 1) & (abst_va.wilson_lower > 0.5)]
@@ -116,6 +124,13 @@ cov_dir = float(usable.coverage_target.max()) if len(usable) else None
 RULE = dict(vol_ann_q80=float(np.quantile(C.ann_vol(_vp("V")), 0.8)), p_dd10_q80=float(np.quantile(cal("D10", _vp("D10")), 0.8)),
             direction_usable=bool(len(usable)), coverage_for_direction=cov_dir,
             conf_threshold=float(THR[cov_dir]) if cov_dir else 0.5, thresholds_by_coverage={str(k): float(v) for k, v in THR.items()})
+LEVELS = [round(float(q), 2) for q in np.arange(0.05, 0.96, 0.05)]                         # risk percentiles for the dashboard tiers
+RISKQ = dict(levels=LEVELS, vol_ann=[float(q) for q in np.quantile(C.ann_vol(_vp("V")), LEVELS)],
+             p_dd10=[float(q) for q in np.quantile(cal("D10", _vp("D10")), LEVELS)])
+REFERENCE = dict(vol_ann_median_train=float(np.median(C.ann_vol(Y["V"][TR & OK["V"]]))),
+                 vol_ann_q20_train=float(np.quantile(C.ann_vol(Y["V"][TR & OK["V"]]), 0.2)),
+                 vol_ann_q80_train=float(np.quantile(C.ann_vol(Y["V"][TR & OK["V"]]), 0.8)),
+                 dd10_rate={s_: float(np.nanmean(Y["D10"][m_ & OK["D10"]])) for s_, m_ in (("train", TR), ("val", VA))})
 save_df(abst_va, "stage6_abstention_validation.csv")
 print("\nAbstention on validation (calibrated direction probabilities):")
 print(abst_va.round(4).to_string(index=False))
@@ -142,7 +157,10 @@ FROZEN = dict(run_tag=RUN_TAG, created_utc=dt.datetime.now(dt.timezone.utc).isof
               holdout_start=HOLDOUT_START, n_rows={s: int(m.sum()) for s, m in (("train", TR), ("val", VA), ("test", TE))},
               split_ids_sha256=_sha(os.path.join(RES, f"split_ids_{RUN_TAG}.parquet")),
               selection=SEL, calibrators=CAL, volatility_residuals=VRES, rule=RULE, prereg=PREREG, H2=H2, controls=CONTROLS,
-              n_configurations_tried=len(LEDGER), backbones=NAMES, pca_dim=PCA_DIM, seed=SEED)
+              n_configurations_tried=len(LEDGER), backbones=NAMES, ft_backbones=FT_NAMES, pca_dim=PCA_DIM, seed=SEED,
+              finetune=dict(enabled=bool(FINETUNE), epochs=FT_EPOCHS, lr_backbone=FT_LR_BACKBONE, lr_head=FT_LR_HEAD,
+                            max_train_rows=FT_MAX_TRAIN_ROWS, max_val_rows=FT_MAX_VAL_ROWS),
+              risk_quantiles=RISKQ, reference=REFERENCE)
 FROZEN_PATH = os.path.join(WORK, "frozen", f"frozen_config_{RUN_TAG}.json")
 json.dump(FROZEN, open(FROZEN_PATH, "w"), indent=1, default=float)
 shutil.copy(FROZEN_PATH, os.path.join(DRIVE_DIR, os.path.basename(FROZEN_PATH)))

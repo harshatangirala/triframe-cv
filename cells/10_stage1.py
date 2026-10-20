@@ -5,8 +5,15 @@ idx = st.index()
 df = st.join_features(idx).merge(st.derived_labels()[["sample_id", "xret5_med", "dd20_pct", "dd20_le_10"]],
                                   on="sample_id", how="left", validate="one_to_one")
 all_tickers = sorted(df["ticker"].unique())
+PILOT_SET = set()
 if QUICK:
-    keep = sorted(np.random.default_rng(SEED).choice(all_tickers, QUICK_TICKERS, replace=False))
+    # the pilot's exact 60 stocks (same draw as the pilot run), plus QUICK_TICKERS - 60 more drawn from the rest
+    n_pilot = min(PILOT_TICKERS, QUICK_TICKERS)
+    pilot = np.random.default_rng(SEED).choice(all_tickers, n_pilot, replace=False)
+    PILOT_SET = set(pilot) if n_pilot == PILOT_TICKERS else set()
+    rest = sorted(set(all_tickers) - set(pilot))
+    extra = np.random.default_rng(SEED + 1).choice(rest, QUICK_TICKERS - n_pilot, replace=False) if QUICK_TICKERS > n_pilot else []
+    keep = sorted(set(pilot) | set(extra))
     df = df[df["ticker"].isin(keep)]
 df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
@@ -19,7 +26,8 @@ s1 = pd.DataFrame({"rows": df.groupby(yr).size(), "tickers": df.groupby(yr)["tic
                    "full_1W_window": df.groupby(yr)["n_valid_W"].apply(lambda s: float((s == 104).mean())),
                    "full_1D_window": df.groupby(yr)["n_valid_D"].apply(lambda s: float((s == 126).mean())),
                    "full_1H_window": df.groupby(yr)["n_valid_H"].apply(lambda s: float((s == 140).mean()))}).reset_index(names="year")
-print(f"Universe: {len(all_tickers)} US stocks in the data ({df['ticker'].nunique()} used in this run).")
+print(f"Universe: {len(all_tickers)} US stocks in the data ({df['ticker'].nunique()} used in this run"
+      + (f", including all {len(PILOT_SET)} pilot stocks" if PILOT_SET else "") + ").")
 print(f"Raw daily/hourly bars (first ticker): {raw_span}.")
 print(f"Chart sets loaded: {len(df):,} rows, decision dates {pd.to_datetime(df['date']).min().date()} to {pd.to_datetime(df['date']).max().date()}.")
 print("Each row = one stock on one decision date: a 104-bar weekly chart, a 126-bar daily chart, a 140-bar hourly chart,")

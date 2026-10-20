@@ -5,6 +5,13 @@ importlib.reload(C); importlib.reload(T)
 from triframe_loader import ImageStore
 
 RES, FIG = os.path.join(WORK, "results"), os.path.join(WORK, "figures")
+EMB_DIR, EMB_FT_DIR = os.path.join(WORK, f"emb_{RUN_TAG}"), os.path.join(WORK, f"emb_ft_{RUN_TAG}")
+PCA_DIR = os.path.join(WORK, f"pca_{RUN_TAG}")
+
+
+def emb_dir(b):
+    """Embedding chunks of a backbone: frozen ones in EMB_DIR, fine-tuned ones ('ft_<backbone>') in EMB_FT_DIR."""
+    return EMB_FT_DIR if b.startswith(T.FT_PREFIX) else EMB_DIR
 TARGETS = {"V": "reg", "O5": "clf", "D10": "clf"}
 TARGET_NAME = {"V": "20-day volatility (logrv20)", "O5": "beats the median stock over 5 days (y_out5)",
                "D10": "drawdown of 10 % or more within 20 days (dd20_le_10)"}

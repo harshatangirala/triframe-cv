@@ -6,15 +6,15 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 IN_COLAB = "google.colab" in sys.modules
 LOCAL_TEST = os.environ.get("TFCV_LOCAL_TEST") == "1"
-RUN_TAG = "quick" if QUICK else "full"
+RUN_TAG = f"s{QUICK_TICKERS}" if QUICK else "full"      # "s120" for the 120-stock run (the 60-stock pilot was "quick")
 DST = os.environ.get("TFCV_DATA_ROOT", "/content/triframe").rstrip("/")
 WORK = os.environ.get("TFCV_WORK", "/content/tfcv")
-for sub in ("", "results", "figures", "frozen", "bundle", "space", "web", f"emb_{RUN_TAG}", f"pca_{RUN_TAG}"):
+for sub in ("", "results", "figures", "frozen", "bundle", "space", "web", "ft", f"emb_{RUN_TAG}", f"emb_ft_{RUN_TAG}", f"pca_{RUN_TAG}"):
     os.makedirs(os.path.join(WORK, sub), exist_ok=True)
 
 if IN_COLAB:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "timm", "xgboost", "lightgbm", "yfinance",
-                    "huggingface_hub>=0.25", "pyarrow", "pandas_market_calendars"], check=True)
+                    "huggingface_hub>=0.25", "pyarrow", "pandas_market_calendars", "reportlab", "safetensors"], check=True)
     from google.colab import drive, userdata
     drive.mount("/content/drive")
     DRIVE_DIR = "/content/drive/MyDrive/triframe_cv"

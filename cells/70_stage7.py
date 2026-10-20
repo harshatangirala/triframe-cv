@@ -107,13 +107,93 @@ for t in TARGETS:
 print("Survivorship sensitivity (test metric with / without the 2001-2009 rows in training):",
       {t: f"{v['metric']} {v['with_2001_2009']:.4f} / {v['without_2001_2009']:.4f}" for t, v in SURV.items()})
 
+# ---- every candidate model on the test years. DESCRIPTIVE ONLY: the frozen choices above are not changed by this table.
+t1 = time.time()
+TB = []
+for t in TARGETS:
+    y = Y[t][MTE[t]]; pm, fn = PRIMARY_LB[t]
+
+    def add_tb(label, kind, fs, head, cond):
+        _, p = refit(t, fs, head, FIT_TV, MTE[t])                     # same frozen hyper-parameters, refitted on train + validation
+        met = T.board_metrics(TARGETS[t], y, p, DATES[MTE[t]], base=BASE.get(t))
+        ci, _ = BOOT_TE[t].ci(fn, y, p)
+        TB.append(dict(target=t, model=label, kind=kind, condition=cond, feature_set=fs, head=head,
+                       chosen=(SELF[t]["feature_set"], SELF[t]["head"]) == (fs, head), primary=pm, primary_value=met[pm],
+                       ci_lo=ci[0], ci_hi=ci[1], **met))
+    add_tb("Numbers only (33 features)", "reference", "NUM", best_of(t, "NUM"), "numbers only")
+    for b in [b for b in NAMES if b in T.PRETRAINED] + FT_NAMES:
+        kind = "fine-tuned" if b in FT_NAMES else "frozen"
+        add_tb(T.display_name(b), kind, f"NUM+IMG:{b}", best_of(t, f"NUM+IMG:{b}"), "numbers + images")
+        add_tb(T.display_name(b), kind, f"IMG:{b}", "linear", "images only")
+BOARD_TEST = pd.DataFrame(TB)
+save_df(BOARD_TEST, "stage7_leaderboard_test.csv")
+for t in TARGETS:
+    sub = BOARD_TEST[(BOARD_TEST.target == t) & (BOARD_TEST.condition != "images only")].sort_values("primary_value", ascending=False)
+    sub = sub.assign(model=sub["model"] + np.where(sub["chosen"], "  <== chosen", ""))
+    print(f"\n{TARGET_NAME[t]} - TEST years, numbers + images (descriptive; probabilities uncalibrated here):")
+    print(sub[["model", "kind", "head"] + MET_COLS[t] + ["ci_lo", "ci_hi"]].round(4).to_string(index=False))
+fig, axes = plt.subplots(1, 3, figsize=(20, 7))
+for ax, t in zip(axes, ("V", "D10", "O5")):
+    sub = BOARD_TEST[(BOARD_TEST.target == t) & (BOARD_TEST.condition == "numbers + images")].sort_values("primary_value")
+    ref = BOARD_TEST[(BOARD_TEST.target == t) & (BOARD_TEST.feature_set == "NUM")].iloc[0]
+    yy = np.arange(len(sub))
+    ax.barh(yy, sub["primary_value"], color=[COLORS[k] for k in sub["kind"]],
+            xerr=np.vstack([sub["primary_value"] - sub["ci_lo"], sub["ci_hi"] - sub["primary_value"]]), capsize=2)
+    ax.axvline(ref["primary_value"], color=COLORS["reference"], ls="--", label=f"numbers only ({ref['primary_value']:.3f})")
+    ax.set_yticks(yy); ax.set_yticklabels([m + ("  ★" if c else "") for m, c in zip(sub["model"], sub["chosen"])], fontsize=8)
+    ax.set_xlim(min(sub["ci_lo"].min(), ref["primary_value"]) - 0.01, max(sub["ci_hi"].max(), ref["primary_value"]) + 0.01)
+    ax.set_title(f"{TARGET_NAME[t]}\nTEST {PRIMARY_LB[t][0]} (numbers + images, 95% CI; ★ = model chosen on validation)", fontsize=10)
+    ax.legend(fontsize=8, loc="lower right")
+plt.tight_layout(); fpath = os.path.join(FIG, "stage7_leaderboard_test.png"); plt.savefig(fpath, dpi=130); plt.show()
+push(fpath, f"figures_{RUN_TAG}/stage7_leaderboard_test.png")
+print(f"Test leaderboard: {len(BOARD_TEST)} model rows in {time.time() - t1:.0f}s")
+
+# ---- 120 vs 60 stocks: this run's frozen models vs the pilot's, on the SAME 60 stocks and the SAME test rows
+VS_PILOT = None
+if PILOT_SET:
+    pc = None
+    try:
+        src = os.environ.get("TFCV_PILOT_BUNDLE")
+        pc = json.load(open(os.path.join(src, "config.json") if src else
+                            hf_hub_download(PILOT_MODEL_REPO, "config.json", token=HF_TOKEN, local_dir=os.path.join(WORK, "_pilot"))))
+    except Exception as e:
+        print(f"Pilot bundle {PILOT_MODEL_REPO} not readable ({type(e).__name__}); skipping the 60 vs 120 comparison.")
+    if pc:
+        mp = df["ticker"].isin(PILOT_SET).values
+        rv = []
+        for t, mets in (("V", ("R2", "wmR2", "MAE")), ("D10", ("AUC", "BSS", "ECE")), ("O5", ("AUC",))):
+            sm = mp[MTE[t]]
+            now = eval_target(t, Y[t][MTE[t]][sm], TEST_PRED[t][sm], DATES[MTE[t]][sm],
+                              s2=FZ["volatility_residuals"]["s2"] if t == "V" else None, base=BASE.get(t))
+            for m_ in mets:
+                rv.append(dict(target=t, metric=m_, pilot_model_60=pc["metrics"]["test"][t].get(m_), this_model_on_pilot_60=now.get(m_),
+                               this_model_all_stocks=TEST_SUMMARY[t].get(m_), rows_pilot=pc["metrics"]["test"][t].get("n"), rows_now=int(sm.sum()),
+                               pilot_choice=pc["targets"][t]["feature_set"] + " / " + pc["targets"][t]["head"],
+                               this_choice=SELF[t]["feature_set"] + " / " + SELF[t]["head"]))
+        VS_PILOT = pd.DataFrame(rv)
+        save_df(VS_PILOT, "stage7_vs_pilot.csv")
+        same = (VS_PILOT["rows_pilot"] == VS_PILOT["rows_now"]).all()
+        print(f"\nMore data: 60-stock pilot model vs this {df['ticker'].nunique()}-stock model on the pilot's 60 stocks, test years "
+              f"({'identical' if same else 'DIFFERENT - check'} test rows: {VS_PILOT['rows_now'].iloc[0]:,}). Lower is better for MAE and ECE.")
+        print(VS_PILOT[["target", "metric", "pilot_model_60", "this_model_on_pilot_60", "this_model_all_stocks", "pilot_choice", "this_choice"]].round(4).to_string(index=False))
+        fig, ax = plt.subplots(figsize=(10, 4))
+        lab = VS_PILOT["target"] + " " + VS_PILOT["metric"]; xx = np.arange(len(VS_PILOT))
+        ax.bar(xx - 0.2, VS_PILOT["pilot_model_60"], 0.4, label="pilot model (trained on 60 stocks)", color="#9e9e9e")
+        ax.bar(xx + 0.2, VS_PILOT["this_model_on_pilot_60"], 0.4, label=f"this model (trained on {df['ticker'].nunique()} stocks)", color="#3b6ea5")
+        ax.set_xticks(xx); ax.set_xticklabels(lab, fontsize=8); ax.legend(fontsize=8)
+        ax.set_title("Does more training data help? Same 60 stocks, same test rows (2020-2022)", fontsize=10)
+        plt.tight_layout(); fpath = os.path.join(FIG, "stage7_vs_pilot.png"); plt.savefig(fpath, dpi=130); plt.show()
+        push(fpath, f"figures_{RUN_TAG}/stage7_vs_pilot.png")
+TEST_DD10_RATE = float(np.mean(Y["D10"][MTE["D10"]]))
+
 # ---- deployment rule = frozen rule + the pre-registered test-year check on direction (part b of PREREG['no_trade'])
 RULE_DEPLOY = dict(FZ["rule"])
 RULE_DEPLOY["direction_usable"] = bool(FZ["rule"]["direction_usable"] and TEST_SUMMARY["O5"]["AUC_CI"][0] > 0.5)
 print(f"Direction shown as a call on the dashboard: {RULE_DEPLOY['direction_usable']} "
       f"(validation check {FZ['rule']['direction_usable']}, test AUC CI {TEST_SUMMARY['O5']['AUC_CI'][0]:.3f}-{TEST_SUMMARY['O5']['AUC_CI'][1]:.3f})")
 TEST_RESULTS = dict(summary=TEST_SUMMARY, H1=H1, H1_supported=H1_supported, H3=H3, no_trade=NT, survivorship=SURV,
-                    rule_deploy=RULE_DEPLOY, n_test_rows={t: int(MTE[t].sum()) for t in TARGETS})
+                    rule_deploy=RULE_DEPLOY, n_test_rows={t: int(MTE[t].sum()) for t in TARGETS}, dd10_rate_test=TEST_DD10_RATE,
+                    leaderboard=BOARD_TEST.to_dict("records"), vs_pilot=None if VS_PILOT is None else VS_PILOT.to_dict("records"))
 tpath = os.path.join(RES, "stage7_test_results.json")
 json.dump(TEST_RESULTS, open(tpath, "w"), indent=1, default=float)
 push(tpath, f"results_{RUN_TAG}/stage7_test_results.json")

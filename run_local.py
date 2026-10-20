@@ -27,6 +27,8 @@ for i, c in enumerate(code_cells):
     t0 = time.time()
     exec(compile(src, f"cell{i}", "exec"), ns)
     if i == 0:                                    # local overrides after the config cell
-        ns.update(QUICK_TICKERS=20, CHUNK_TICKERS=8, N_BOOT=200, PCA_DIM=16, FACTORY=stub_factory)
+        ns.update(QUICK_TICKERS=20, PILOT_TICKERS=10, CHUNK_TICKERS=8, N_BOOT=200, PCA_DIM=16, FACTORY=stub_factory,
+                  FT_BACKBONES=["resnet18", "convnext_tiny"], FT_EPOCHS=2, FT_MAX_TRAIN_ROWS=1500, FT_MAX_VAL_ROWS=600,
+                  MC_DRAWS=4000, MC_TDF_GRID=[4, 30], MC_LOWK_GRID=[0.5, 1.0])
     print(f"--- cell {i} ok ({time.time() - t0:.0f}s)", flush=True)
 print("ALL CELLS RAN")
