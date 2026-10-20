@@ -53,7 +53,7 @@ np.savez(os.path.join(B_DIR, "arrays.npz"), **{k: np.asarray(v) for k, v in arra
 BD = C.Bundle(B_DIR)
 common = MTE["V"] & MTE["O5"] & MTE["D10"]
 sel_rows = np.flatnonzero(common)[:3000]
-emb = {b: {v: T.assemble(EMB_DIR, f"{b}|{v}", df["sample_id"].values[sel_rows]) for v in T.VIEWS} for b in need}
+emb = {b: {v: T.assemble(emb_dir(b), f"{b}|{v}", df["sample_id"].values[sel_rows]) for v in T.VIEWS} for b in need}
 pb = BD.predict_matrix(Xraw[sel_rows], emb)
 pos = {t: np.searchsorted(np.flatnonzero(MTE[t]), sel_rows) for t in TARGETS}
 dif = {"V": np.abs(pb["logrv20"] - TEST_PRED["V"][pos["V"]]), "O5": np.abs(pb["p_out5"] - TEST_PRED["O5"][pos["O5"]]),

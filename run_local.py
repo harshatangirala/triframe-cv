@@ -30,5 +30,14 @@ for i, c in enumerate(code_cells):
         ns.update(QUICK_TICKERS=20, PILOT_TICKERS=10, CHUNK_TICKERS=8, N_BOOT=200, PCA_DIM=16, FACTORY=stub_factory,
                   FT_BACKBONES=["resnet18", "convnext_tiny"], FT_EPOCHS=2, FT_MAX_TRAIN_ROWS=1500, FT_MAX_VAL_ROWS=600,
                   MC_DRAWS=4000, MC_TDF_GRID=[4, 30], MC_LOWK_GRID=[0.5, 1.0])
+    if os.environ.get("TFCV_FORCE_FT") and "STAGE 6: compare, select" in src:
+        # test hook: pretend a fine-tuned backbone won the volatility selection, so every later stage runs the fine-tuned path
+        fs = f"NUM+IMG:{os.environ['TFCV_FORCE_FT']}"
+        fit = {k: v for k, v in ns["FITS"][("V", fs, "tree")].items() if k not in ("model", "coef", "intercept")}
+        fz = json.load(open(ns["FROZEN_PATH"]))
+        fz["selection"]["V"].update(feature_set=fs, head="tree", fit=fit)
+        json.dump(fz, open(ns["FROZEN_PATH"], "w"), indent=1, default=float)
+        ns["SEL"]["V"].update(feature_set=fs, head="tree", fit=fit)
+        print(f"TEST HOOK: volatility selection forced to {fs} / tree")
     print(f"--- cell {i} ok ({time.time() - t0:.0f}s)", flush=True)
 print("ALL CELLS RAN")
