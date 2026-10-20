@@ -71,11 +71,17 @@ def _years(cfg, split):
     return f"{a[:4]}-{last}"
 
 
+FT_WORDS = {"": "fine-tuned", "p25": "fine-tuned, last 25%", "p50": "fine-tuned, last 50%", "risk": "fine-tuned for risk"}
+
+
 def backbone_label(b):
-    """'ft_convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned)'; 'swin_tiny_patch4_window7_224' -> 'Swin-T (frozen)'."""
+    """'ft_convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned)'; 'ft_p50.convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned, last 50%)';
+    'swin_tiny_patch4_window7_224' -> 'Swin-T (frozen)'."""
     ft = b.startswith("ft_")
-    base = b[3:] if ft else b
-    return f"{BACKBONE_NAMES.get(base, base)} ({'fine-tuned' if ft else 'frozen'})"
+    base, variant = (b[3:] if ft else b), ""
+    if ft and "." in base:
+        variant, base = base.split(".", 1)
+    return f"{BACKBONE_NAMES.get(base, base)} ({FT_WORDS.get(variant, 'fine-tuned') if ft else 'frozen'})"
 
 
 def pretrain_words(timm_name):

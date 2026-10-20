@@ -10,20 +10,38 @@ The short answer from the pilot run: **the numbers carry the signal.** Volatilit
 images do not add a significant improvement on the test years; and there is no detectable 5-day directional edge, so the
 decision layer defaults to **NO TRADE**.
 
-> **Scope of the results below.** They come from the 60-stock pilot: 60 randomly chosen stocks out of the 979-stock universe,
-> 27,313 chart sets, with **frozen** backbones. Notebook **v3** (this version) repeats everything on 120 stocks (the pilot's 60 + 60
-> more), adds fine-tuning, a model leaderboard, a Monte Carlo check and a PDF report; its results will replace these once it has run.
+> **Scope.** Results below come from two completed runs: v3 on 120 stocks (frozen **and** fine-tuned backbones) and the earlier
+> 60-stock pilot (frozen only). **Notebook v4** (this version) runs 500 stocks with the fixes listed below; its results will be
+> added once it has run. Honest status of the evaluation periods: the 2020-2022 test years have now been read by both runs, and the
+> 2023-2026 period has been opened twice, so neither is an untouched test any more (see `docs/triframe_audit.md`).
 
-## What is new in v3
+## Results (v3, 120 stocks, 56,099 chart sets)
+
+| Target | Chosen model (pre-registered rule) | Validation 2017-2019 | Test 2020-2022 | 2023-2026 (opened once for this run) |
+|---|---|---|---|---|
+| 20-day volatility (log realised vol) | numbers + fine-tuned ViT-B/16 chart features, boosted trees | R² 0.583 | R² 0.503 (95% CI 0.266-0.639) | R² 0.584 |
+| Drawdown of 10% or more within 20 days | numbers only, boosted trees | AUC 0.713, Brier skill 0.101 | AUC 0.663, Brier skill 0.089 | not scored (no labels) |
+| Beats the median stock over 5 days | numbers only, boosted trees | AUC 0.522 | AUC 0.508 (95% CI 0.496-0.520) | AUC 0.508 |
+
+- **Chart images add to the numbers (H1): not supported.** Test volatility ΔR² +0.003 (95% CI −0.016 to +0.027); direction ΔAUC
+  +0.000 (−0.014 to +0.015).
+- **Fine-tuning:** raised validation volatility R² for 7 of 7 backbones (significantly for 5), but in v3 fine-tuning stopped on the same
+  validation years that then chose the model, which flatters it; on the test years the chosen fine-tuned model added nothing
+  significant. v4 fixes the protocol.
+- **More data (120 vs 60 stocks, same 60 stocks and rows):** within-month volatility R² 0.550 → 0.562; drawdown calibration error
+  0.058 → 0.034, Brier skill 0.062 → 0.077; overall volatility R² flat.
+- **Monte Carlo:** the simulation's 90% band held 91% of real 20-day outcomes on validation and 89% on the test years.
+
+## What is new in v4
 
 | | |
 |---|---|
-| 120 stocks | The sample contains the pilot's 60 stocks, and Stage 7 scores the pilot's model and the new one on the same 60 stocks and the same test rows, so "does more data help?" gets a like-for-like answer. |
-| Fine-tuning | Until v2 every backbone was **frozen** (ImageNet features, only the small heads trained). Stage 5F fine-tunes all seven pretrained backbones end to end (one network over the three views + the 33 numbers, multi-task loss, training years only, early stopping on validation, no augmentation) and lets them compete with their frozen versions under the same selection rule, with confidence intervals and GPU time. |
-| Leaderboard | Stage 6L: model cards (what each network is, pretraining data, size, speed) and every model on six metrics per target (R², within-month R², QLIKE, MAE, RMSE, Spearman; AUC, average precision, accuracy, log loss, Brier skill, calibration error) with bars, a heatmap and accuracy-vs-size charts; the same on the test years in Stage 7. |
-| Monte Carlo | Stage 7M calibrates the dashboard's price simulation on validation (tail shape, intraday range) and checks it once on the test years. |
-| PDF report | Stage 11 writes a 5-page plain-language report (steps, models, architecture, results, fine-tuning, simulation, dashboard) to Drive, Hugging Face and your Downloads. |
-| Dashboard | Up to four companies at once; per company a gauge, a pie, bars, the risk tier, a detailed plain-language explanation, a summary table, a primary takeaway and a Monte Carlo fan; across companies a risk ranking, a risk map and side-by-side simulations; the models in use and (with a v3 bundle) how every candidate scored. |
+| 500 stocks | Contains the 60 and 120 stocks of the earlier runs (same seeds), so Stage 7 compares all three runs on the same rows. A local test on validation years showed more stocks is the lever that raises R² (numbers-only 0.487 with 120 stocks, 0.526 with 500, 0.531 with all 979); a wider tree search and market-wide features did not help. |
+| Did training reach the minimum? | Stage 6D: certified global minimum for the convex ridge and logistic heads (zero gradient, identical answers from random starts, a single bowl); boosting curves with the kept validation minimum; for the fine-tuned networks, which are not convex, convergence, the held-out minimum, loss-landscape plots and seed stability (no method can certify a global minimum for a neural network). |
+| Metrics and curves | Precision, recall, F1 (thresholds fixed on validation), ROC-AUC, R², RMSE with ROC / precision-recall curves, confusion matrices, reliability plots (Stage 7E); per-epoch and per-step training, early-stopping and validation curves; regularisation and learning curves. |
+| Fixes from an external review | Fine-tuning early-stops on 2015-2016 instead of the selection years; image models must also win in every validation year; volatility baselines (rolling, EWMA, GARCH(1,1)); QLIKE no longer uses test residuals; weekly rank IC with a Newey-West t-statistic; a provenance row for every metric (`metrics_provenance.csv`); the test years and the 2023+ period labelled as already seen. See `docs/triframe_audit.md`. |
+| Fine-tuning study | Train only the last 25% or 50% of the network, or a risk-only loss, on the two best backbones; extra seeds measure run-to-run variation. |
+| Direction re-examined | A separate experiment on the continuous 5-day excess return, scored as a weekly ranking. |
 
 ## Results (pilot, 60 stocks)
 
@@ -110,6 +128,7 @@ The trained model bundle stays in a private Hugging Face repo and is loaded at s
 | `tf_render.py`, `feat_visible.py` | The project's chart renderer and numeric-feature code (needed by the modules above). |
 | `make_notebook.py`, `run_local.py` | Build the notebook from `cells/` and run it locally on CPU with stand-in backbones. |
 | `tests/` | Parity, OCR, dashboard-logic, Streamlit, fine-tuned-weights round-trip tests (most need the private data, bundle or screenshots). |
+| `docs/triframe_audit.md` | The audit of the v3 run: targets, splits, holdout history, metric discrepancies and their causes. |
 | `results/REPORT_pilot_60_stocks.md` | The report the pilot run generated. |
 | `docs/RUNBOOK.md` | How to run the notebook on Colab. |
 | `docs/DEPLOY.md` | How to deploy the dashboard on Streamlit Community Cloud. |
@@ -122,9 +141,10 @@ The notebook expects a Colab GPU runtime (an A100 is fastest) and a Hugging Face
 
 ## Limits
 
-- Pilot results only: 60 of 979 stocks, frozen backbones (no fine-tuning in the pilot).
+- 60 and 120 of 979 stocks so far (500 in v4); frozen backbones in the pilot, frozen and fine-tuned in v3.
+- The 2020-2022 test years and the 2023-2026 period have been looked at by earlier runs; a truly fresh test needs data after October 2026.
 - Survivor-biased universe (stocks that still exist), one data vendor. Risk may be understated for stocks that later fail.
-- The 2023-2026 holdout was opened once, for the pilot's frozen configuration. In that run the notebook computed the unlock
-  key itself rather than the owner pasting it. A full-universe run needs its own frozen configuration.
+- The 2023-2026 period was opened twice (pilot on 2026-10-19, v3 on 2026-10-20), each time after that run's choices were frozen. In
+  the pilot the notebook computed the unlock key itself rather than the owner pasting it. From v4 on it is treated as exposed.
 - Live inputs come from Yahoo Finance.
 - Research output, not investment advice.

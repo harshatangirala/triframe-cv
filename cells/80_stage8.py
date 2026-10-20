@@ -45,7 +45,10 @@ BUNDLE_CFG = dict(version="tfcv-1", run_tag=RUN_TAG, created_utc=dt.datetime.now
                   data=dict(universe=len(all_tickers), tickers_used=int(df["ticker"].nunique()), rows=len(df)),
                   mc={k: MC[k] for k in ("t_df", "low_k", "res_quantiles", "tilt_default", "horizon", "drift", "coverage", "dd_brier")},
                   risk_quantiles=FZ["risk_quantiles"], reference=dict(FZ["reference"], dd10_rate_test=TEST_DD10_RATE),
-                  leaderboard_test=LB_COMPACT, finetune=dict(FZ["finetune"], verdict=FT_VERDICT, backbones=FT_NAMES))
+                  leaderboard_test=LB_COMPACT, finetune=dict(FZ["finetune"], verdict=FT_VERDICT, backbones=FT_NAMES),
+                  thresholds=FZ["thresholds"], provenance=dict(run_id=RUN_ID, code_hash=CODE_HASH, config_hash=CONFIG_HASH,
+                                                               notebook=NOTEBOOK_VERSION, test_status="historical diagnostic",
+                                                               holdout_status=f"exposed (opened {len(HOLDOUT_OPENINGS)} times before this run)"))
 json.dump(BUNDLE_CFG, open(os.path.join(B_DIR, "config.json"), "w"), indent=1, default=float)
 np.savez(os.path.join(B_DIR, "arrays.npz"), **{k: np.asarray(v) for k, v in arrays.items()})
 
@@ -94,8 +97,11 @@ if need:
             for v in T.VIEWS:
                 e_nb = T.assemble(emb_dir(b), f"{b}|{v}", np.array([r.sample_id]))[0]
                 cos = float(np.dot(e_dash[v], e_nb) / (np.linalg.norm(e_dash[v]) * np.linalg.norm(e_nb) + 1e-12)); worst = min(worst, cos)
-    print(f"Dashboard embedding code vs notebook embeddings ({len(pick3)} test rows x {len(need)} backbones x 3 views): lowest cosine similarity {worst:.5f}")
-    assert worst > 0.995, "the dashboard would compute different image features from the notebook"
+    if globals().get("FACTORY") is None:
+        print(f"Dashboard embedding code vs notebook embeddings ({len(pick3)} test rows x {len(need)} backbones x 3 views): lowest cosine similarity {worst:.5f}")
+        assert worst > 0.995, "the dashboard would compute different image features from the notebook"
+    else:
+        print("Dashboard embedding check skipped (local test with stand-in networks).")
 
 # ---- model card (only computed values)
 def _fmt(d):
@@ -109,6 +115,7 @@ card += ["", f"H1 (images add to numbers, test): {'supported' if H1_supported el
          f"H2 (backbones differ, validation): {'supported' if FZ['H2']['supported'] else 'not supported'}; "
          f"H3 (abstention helps, test): {'supported' if H3['supported'] else 'not supported'}.", "",
          f"Splits: {SPLITS}. Holdout from {HOLDOUT_START} (see Stage 10 results if run). Configurations tried: {FZ['n_configurations_tried']}.",
+         "Test years: historical diagnostic (already read by earlier runs). Holdout 2023+: exposed (opened before).",
          "Limits: 979 survivor US stocks, one data vendor; not investment advice."]
 open(os.path.join(B_DIR, "README.md"), "w", encoding="utf-8").write("\n".join(card))
 push(B_DIR, "", repo_id=MODEL_REPO, repo_type="model", msg=f"bundle {RUN_TAG}")

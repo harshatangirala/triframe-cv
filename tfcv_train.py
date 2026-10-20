@@ -105,19 +105,38 @@ def pretrain_data(timm_name, pretrained=True):
 
 
 def display_name(name):
-    """'ft_convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned)'."""
+    """'ft_convnext_tiny' -> 'ConvNeXt-Tiny (fine-tuned)'; 'ft_p50.resnet18' -> 'ResNet-18 (fine-tuned, last 50%)'."""
     base = base_name(name)
     nm = BACKBONE_INFO.get(base, ("", base, ""))[1]
-    return f"{nm} (fine-tuned)" if name.startswith(FT_PREFIX) else nm
+    v = ft_variant(name)
+    return nm if v is None else f"{nm} ({FT_VARIANTS.get(v, 'fine-tuned ' + v)})"
 
 
-# fine-tuned backbones are named "ft_<backbone>" and load their weights from FT_WEIGHTS (filled by the notebook's Stage 5F)
+# Fine-tuned backbones are named "ft_<backbone>" (full fine-tuning on all three targets) or "ft_<variant>.<backbone>" for the
+# controlled study in Stage 5F: "p25" / "p50" = only the last 25% / 50% of the backbone's parameters train; "risk" = full
+# fine-tuning on the two risk targets only (volatility and drawdown). Weights load from FT_WEIGHTS (filled by Stage 5F).
 FT_PREFIX = "ft_"
 FT_WEIGHTS = {}
+FT_VARIANTS = {"": "fine-tuned", "p25": "fine-tuned, last 25%", "p50": "fine-tuned, last 50%", "risk": "fine-tuned, risk targets only"}
+
+
+def ft_name(base, variant=""):
+    return FT_PREFIX + (f"{variant}.{base}" if variant else base)
+
+
+def ft_variant(name):
+    """None for a frozen backbone, "" for full fine-tuning, else the study variant tag."""
+    if not name.startswith(FT_PREFIX):
+        return None
+    s = name[len(FT_PREFIX):]
+    return s.split(".", 1)[0] if "." in s else ""
 
 
 def base_name(name):
-    return name[len(FT_PREFIX):] if name.startswith(FT_PREFIX) else name
+    if not name.startswith(FT_PREFIX):
+        return name
+    s = name[len(FT_PREFIX):]
+    return s.split(".", 1)[1] if "." in s else s
 
 
 def build_backbone(name, device, factory=None):
@@ -300,30 +319,62 @@ def _ft_losses(out, ys):
     return terms
 
 
-def finetune(name, packed, xnum, ys, train_idx, val_idx, device, epochs=4, batch=64, lr_backbone=3e-5, lr_head=1e-3,
-             weight_decay=0.05, patience=1, seed=11, factory=None, log=print):
-    """Fine-tunes one pretrained backbone end to end on TRAINING rows only, with early stopping on the VALIDATION loss.
-    packed: (n, TRIPLET_BYTES) chart sets; xnum: (n, 33) standardised numbers; ys: (yV, yO5, yD10) arrays of length n (NaN =
-    missing); train_idx / val_idx index into those arrays. No augmentation (flips or crops would change what a chart means).
-    Returns (backbone with the best-epoch weights, eval mode), mean, std, record, history (DataFrame), and the network's own
-    validation predictions at the best epoch {V: logrv20, O5: prob, D10: prob}."""
+def _set_trainable(m, frac):
+    """Train only the last part of a backbone (timm registers parameters roughly from input to output): every parameter tensor
+    that reaches into the last `frac` share of the parameter count trains, the rest is frozen, so at least `frac` of the
+    network trains. frac = 1 trains everything. Returns the number of trainable parameters."""
+    params = list(m.parameters())
+    total = sum(p.numel() for p in params); start = total * (1.0 - float(frac)); seen = 0; n = 0
+    for p in params:
+        p.requires_grad = seen + p.numel() > start + 0.5 or frac >= 1.0
+        seen += p.numel(); n += p.numel() if p.requires_grad else 0
+    return n
+
+
+def _freeze_bn(module):
+    """Keep batch-norm layers whose parameters are frozen in eval mode, so frozen layers really stay as they were."""
+    import torch
+    for mod in module.modules():
+        if isinstance(mod, torch.nn.modules.batchnorm._BatchNorm) and not any(p.requires_grad for p in mod.parameters(recurse=False)):
+            mod.eval()
+
+
+def finetune(name, packed, xnum, ys, train_idx, stop_idx, device, val_idx=None, epochs=8, patience=2, rows_per_epoch=None,
+             batch=64, lr_backbone=3e-5, lr_head=1e-3, weight_decay=0.05, unfreeze=1.0, task_weights=(1.0, 1.0, 1.0),
+             seed=11, factory=None, log=print, log_every=25, train_probe=4096):
+    """Fine-tunes one pretrained backbone end to end.
+    * train_idx: rows it learns from (a fresh random draw of rows_per_epoch of them every epoch);
+    * stop_idx: an inner validation slice whose loss decides early stopping (stop after `patience` epochs without improvement);
+    * val_idx: rows that are only scored and logged, never used for any decision (so the selection years stay clean).
+    packed: (n, TRIPLET_BYTES) chart sets; xnum: (n, 33) standardised numbers; ys: (yV, yO5, yD10) arrays (NaN = missing).
+    unfreeze: share of the backbone's parameters (the last ones) that train; task_weights: loss weights for (volatility,
+    direction, drawdown). One backbone embeds the weekly, daily and hourly chart; a small head adds the numbers. AdamW, short
+    warm-up then cosine decay, gradient clipping, mixed precision, no augmentation.
+    Returns (backbone at the best epoch, mean, std, record, epoch history, step history, the network's own predictions on
+    val_idx at the best epoch, head states {"init", "best"})."""
     import torch
     torch.manual_seed(seed); rng = np.random.default_rng(seed)
     m, mu, sd, rec = build_backbone(name, device, factory)
     with torch.no_grad():
         dim = int(m(torch.zeros(2, 3, 224, 224, device=device)).shape[1])
     net = _ft_net(m, dim, xnum.shape[1]).to(device)
+    n_trainable = _set_trainable(m, unfreeze)
+    head_init = {k: v.detach().cpu().clone() for k, v in net.state_dict().items() if not k.startswith("backbone.")}
     yv = np.asarray(ys[0], float)
     v_mu, v_sd = float(np.nanmean(yv[train_idx])), float(np.nanstd(yv[train_idx]))
     Yt = [(yv - v_mu) / v_sd, np.asarray(ys[1], float), np.asarray(ys[2], float)]
+    tw = [float(w) for w in task_weights]
     cuda = str(device).startswith("cuda")
     amp_dtype = torch.bfloat16 if (cuda and torch.cuda.is_bf16_supported()) else torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=cuda and amp_dtype == torch.float16)
     head_params = list(net.trunk.parameters()) + list(net.out.parameters())
-    opt = torch.optim.AdamW([{"params": m.parameters(), "lr": lr_backbone}, {"params": head_params, "lr": lr_head}],
-                            weight_decay=weight_decay)
-    steps = epochs * math.ceil(len(train_idx) / batch); warm = max(1, int(0.05 * steps))
+    bb_params = [p for p in m.parameters() if p.requires_grad]
+    groups = ([{"params": bb_params, "lr": lr_backbone}] if bb_params else []) + [{"params": head_params, "lr": lr_head}]
+    opt = torch.optim.AdamW(groups, weight_decay=weight_decay)
+    n_epoch = int(min(len(train_idx), rows_per_epoch or len(train_idx)))
+    steps = epochs * math.ceil(n_epoch / batch); warm = max(1, int(0.05 * steps))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / warm) * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(1.0, s / steps)))))
+    probe = np.sort(rng.choice(train_idx, min(train_probe, len(train_idx)), replace=False))   # fixed rows: training loss in eval mode
 
     def prep(ii):
         vs = views_from_packed(packed[ii], device)
@@ -339,20 +390,28 @@ def finetune(name, packed, xnum, ys, train_idx, val_idx, device, epochs=4, batch
                 outs.append(net(xs, xn).float().cpu().numpy())
         return np.concatenate(outs) if outs else np.zeros((0, 3))
 
-    def val_loss(o):
-        tot = 0.0
+    def scores(o, idx):
+        """Weighted loss (the training objective) and plain-language metrics of the network's outputs on rows idx."""
+        tot, parts = 0.0, []
         for k in range(3):
-            y = Yt[k][val_idx]; ok = np.isfinite(y)
-            if ok.any():
-                p = o[ok, k]
-                tot += float(np.mean((p - y[ok]) ** 2)) if k == 0 else float(np.mean(np.logaddexp(0, p) - y[ok] * p))
-        return tot
+            y = Yt[k][idx]; ok = np.isfinite(y); p = o[ok, k]
+            l_ = (float(np.mean((p - y[ok]) ** 2)) if k == 0 else float(np.mean(np.logaddexp(0, p) - y[ok] * p))) if ok.any() else 0.0
+            parts.append(l_); tot += tw[k] * l_
+        yvv = yv[idx]; okv = np.isfinite(yvv)
+        res = dict(loss=tot, loss_V=parts[0], loss_O5=parts[1], loss_D10=parts[2], risk_loss=parts[0] + parts[2],
+                   R2_V=r2(yvv[okv], o[okv, 0] * v_sd + v_mu) if okv.sum() > 2 else float("nan"))
+        for k, nm in ((2, "AUC_D10"), (1, "AUC_O5")):
+            y = Yt[k][idx]; ok = np.isfinite(y)
+            res[nm] = auc(y[ok], o[ok, k]) if ok.sum() > 2 and 0 < np.mean(y[ok]) < 1 else float("nan")
+        return res
 
-    hist, best, bad, best_state, best_out = [], np.inf, 0, None, None
-    t_start = time.time(); n_img = 0
+    hist, steps_log, best, bad, best_state, best_head, best_out = [], [], np.inf, 0, None, None, None
+    t_start = time.time(); n_img = 0; step = 0
     for ep in range(1, epochs + 1):
-        net.train(); t0 = time.time(); run = []
-        order = rng.permutation(train_idx)
+        net.train(); _freeze_bn(m); t0 = time.time(); run = []
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
+        order = rng.choice(train_idx, n_epoch, replace=False)
         for b0 in range(0, len(order), batch):
             ii = order[b0:b0 + batch]
             if len(ii) < 2:
@@ -360,39 +419,127 @@ def finetune(name, packed, xnum, ys, train_idx, val_idx, device, epochs=4, batch
             xs, xn, yb = prep(ii)
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=cuda):
                 out = net(xs, xn)
-            loss = sum(_ft_losses(out, yb))
+            loss = sum(w * t for w, t in zip(tw, _ft_losses(out, yb)))
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            scaler.step(opt); scaler.update(); sched.step()
+            gn = torch.nn.utils.clip_grad_norm_([p for p in net.parameters() if p.requires_grad], 1.0)
+            scaler.step(opt); scaler.update(); sched.step(); step += 1
             run.append(float(loss.detach())); n_img += 3 * len(ii)
-        o = predict(val_idx)
-        vl = val_loss(o)
-        yva = yv[val_idx]; okv = np.isfinite(yva)
-        r2v = r2(yva[okv], o[okv, 0] * v_sd + v_mu) if okv.sum() > 2 else float("nan")
-        yd = Yt[2][val_idx]; okd = np.isfinite(yd)
-        aucd = auc(yd[okd], o[okd, 2]) if okd.sum() > 2 and 0 < np.nanmean(yd[okd]) < 1 else float("nan")
-        hist.append(dict(backbone=name, epoch=ep, train_loss=float(np.mean(run)) if run else float("nan"), val_loss=vl,
-                         val_R2_V=r2v, val_AUC_D10=aucd, seconds=time.time() - t0))
-        log(f"   {name} epoch {ep}/{epochs}: train loss {hist[-1]['train_loss']:.4f} | val loss {vl:.4f} | "
-            f"val R2 (volatility) {r2v:.3f} | val AUC (drawdown) {aucd:.3f} | {time.time() - t0:.0f}s")
-        if vl < best - 1e-5:
-            best, bad, best_out = vl, 0, o
+            if step % log_every == 0:
+                steps_log.append(dict(backbone=name, step=step, epoch=ep, loss=float(np.mean(run[-log_every:])), grad_norm=float(gn),
+                                      lr_backbone=float(opt.param_groups[0]["lr"]) if bb_params else 0.0,
+                                      lr_head=float(opt.param_groups[-1]["lr"])))
+        s_tr, s_st = scores(predict(probe), probe), scores(predict(stop_idx), stop_idx)
+        o_val = predict(val_idx) if val_idx is not None and len(val_idx) else None
+        s_va = scores(o_val, val_idx) if o_val is not None else {}
+        h = dict(backbone=name, epoch=ep, train_loss_running=float(np.mean(run)) if run else float("nan"), train_loss=s_tr["loss"],
+                 stop_loss=s_st["loss"], val_loss=s_va.get("loss", float("nan")), train_risk_loss=s_tr["risk_loss"],
+                 stop_risk_loss=s_st["risk_loss"], val_risk_loss=s_va.get("risk_loss", float("nan")), train_R2_V=s_tr["R2_V"], stop_R2_V=s_st["R2_V"],
+                 val_R2_V=s_va.get("R2_V", float("nan")), stop_AUC_D10=s_st["AUC_D10"], val_AUC_D10=s_va.get("AUC_D10", float("nan")),
+                 val_AUC_O5=s_va.get("AUC_O5", float("nan")), lr_backbone=float(opt.param_groups[0]["lr"]) if bb_params else 0.0,
+                 seconds=time.time() - t0, peak_gpu_gb=(torch.cuda.max_memory_allocated() / 1e9) if cuda else 0.0, seed=seed)
+        hist.append(h)
+        log(f"   {name} epoch {ep}/{epochs}: train loss {h['train_loss']:.4f} | early-stop loss {h['stop_loss']:.4f} | "
+            f"val loss {h['val_loss']:.4f} | val R2 (volatility) {h['val_R2_V']:.3f} | {h['seconds']:.0f}s")
+        if h["stop_loss"] < best - 1e-5:
+            best, bad, best_out = h["stop_loss"], 0, o_val
             best_state = {k: v.detach().cpu().clone() for k, v in m.state_dict().items()}
+            best_head = {k: v.detach().cpu().clone() for k, v in net.state_dict().items() if not k.startswith("backbone.")}
         else:
             bad += 1
-            if bad > patience:
+            if bad >= patience:
                 break
     m.load_state_dict(best_state)
+    for p in m.parameters():
+        p.requires_grad = True
     m.eval()
-    best_ep = int(min(hist, key=lambda h: h["val_loss"])["epoch"])
+    best_ep = int(min(hist, key=lambda h_: h_["stop_loss"])["epoch"])
     secs = time.time() - t_start
     rec = dict(rec, ft=dict(epochs_run=len(hist), best_epoch=best_ep, minutes=secs / 60, train_img_per_s=n_img / max(secs, 1e-9),
-                            n_train=int(len(train_idx)), n_val=int(len(val_idx)), lr_backbone=lr_backbone, lr_head=lr_head,
-                            batch=batch, weight_decay=weight_decay, v_mean=v_mu, v_std=v_sd))
-    e2e = {"V": best_out[:, 0] * v_sd + v_mu, "O5": 1 / (1 + np.exp(-best_out[:, 1])), "D10": 1 / (1 + np.exp(-best_out[:, 2]))}
-    return m, mu, sd, rec, pd.DataFrame(hist), e2e
+                            n_train=int(len(train_idx)), rows_per_epoch=n_epoch, n_stop=int(len(stop_idx)),
+                            n_val=int(len(val_idx)) if val_idx is not None else 0, lr_backbone=lr_backbone, lr_head=lr_head, batch=batch,
+                            weight_decay=weight_decay, unfreeze=float(unfreeze), task_weights=tw, n_trainable_backbone=int(n_trainable),
+                            patience=patience, max_epochs=epochs, seed=seed, v_mean=v_mu, v_std=v_sd, best_stop_loss=float(best), dim=dim,
+                            best_stop_risk_loss=float([h_["stop_risk_loss"] for h_ in hist if h_["epoch"] == best_ep][0])))
+    e2e = None if best_out is None else {"V": best_out[:, 0] * v_sd + v_mu, "O5": 1 / (1 + np.exp(-best_out[:, 1])),
+                                         "D10": 1 / (1 + np.exp(-best_out[:, 2]))}
+    return m, mu, sd, rec, pd.DataFrame(hist), pd.DataFrame(steps_log), e2e, {"init": head_init, "best": best_head}
+
+
+def ft_landscape(name, weights_path, heads, dim, packed, xnum, ys, sets, device, v_mu, v_sd, task_weights=(1.0, 1.0, 1.0),
+                 alphas=None, grid=None, seed=0, batch=128, factory=None):
+    """Loss landscape of a fine-tuned network around its solution.
+    1-D (Goodfellow et al., 2015): the loss along the straight line from the starting point (pretrained backbone + the head's
+    random initial weights, alpha = 0) to the trained network (alpha = 1), and beyond on both sides.
+    2-D (Li et al., 2018): the loss on a plane through the trained network spanned by two random directions, each scaled filter
+    by filter to the size of the network's own weights (biases and norm layers left out).
+    sets: {"train": rows, "validation": rows}. A minimum shows up as the lowest point sitting at alpha = 1 / at the centre."""
+    import torch
+    from safetensors.torch import load_file
+    alphas = np.linspace(-0.5, 1.5, 21) if alphas is None else np.asarray(alphas)
+    grid = np.linspace(-1.0, 1.0, 13) if grid is None else np.asarray(grid)
+    m0, mu, sd, _ = build_backbone(base_name(name), device, factory)          # the pretrained starting point
+    net = _ft_net(m0, dim, xnum.shape[1]).to(device).eval()
+    start = {f"backbone.{k}": v.detach().cpu().clone() for k, v in m0.state_dict().items()}
+    start.update(heads["init"])
+    end = {f"backbone.{k}": v for k, v in load_file(weights_path, device="cpu").items()}
+    end.update(heads["best"])
+    yv = np.asarray(ys[0], float)
+    Yt = [(yv - v_mu) / v_sd, np.asarray(ys[1], float), np.asarray(ys[2], float)]
+    cuda = str(device).startswith("cuda")
+    amp_dtype = torch.bfloat16 if (cuda and torch.cuda.is_bf16_supported()) else torch.float16
+    inputs = {}
+    for nm, idx in sets.items():
+        vs_ = views_from_packed(packed[idx], "cpu")
+        inputs[nm] = ([((vs_[v].expand(-1, 3, -1, -1) - mu.cpu()) / sd.cpu()) for v in VIEWS],
+                      torch.as_tensor(xnum[idx], dtype=torch.float32), idx)
+
+    def loss_of(state):
+        net.load_state_dict({k: (v.to(start[k].dtype) if v.is_floating_point() else v) for k, v in state.items()})
+        net.eval(); out = {}
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=cuda):
+            for nm, (xs, xn, idx) in inputs.items():
+                o = []
+                for b0 in range(0, len(idx), batch):
+                    o.append(net([x[b0:b0 + batch].to(device) for x in xs], xn[b0:b0 + batch].to(device)).float().cpu().numpy())
+                o = np.concatenate(o); tot = 0.0
+                for k in range(3):
+                    y = Yt[k][idx]; ok = np.isfinite(y); p = o[ok, k]
+                    if ok.any():
+                        tot += task_weights[k] * (float(np.mean((p - y[ok]) ** 2)) if k == 0 else float(np.mean(np.logaddexp(0, p) - y[ok] * p)))
+                out[nm] = tot
+        return out
+
+    floats = [k for k in end if end[k].is_floating_point()]
+    line = {nm: [] for nm in sets}
+    for al in alphas:
+        st_ = {k: ((1.0 - al) * start[k].float() + al * end[k].float()) if k in floats else end[k] for k in end}
+        r = loss_of(st_)
+        for nm in sets:
+            line[nm].append(r[nm])
+    gen = torch.Generator().manual_seed(int(seed))
+
+    def direction():
+        d = {}
+        for k in floats:
+            w = end[k].float()
+            if w.dim() <= 1:
+                d[k] = torch.zeros_like(w); continue
+            r_ = torch.randn(w.shape, generator=gen)
+            wf, rf = w.reshape(w.shape[0], -1), r_.reshape(w.shape[0], -1)
+            d[k] = (rf * (wf.norm(dim=1, keepdim=True) / (rf.norm(dim=1, keepdim=True) + 1e-10))).reshape(w.shape)
+        return d
+    d1, d2 = direction(), direction()
+    surf = {nm: np.zeros((len(grid), len(grid))) for nm in sets}
+    for i, a in enumerate(grid):
+        for j, b in enumerate(grid):
+            st_ = {k: (end[k].float() + a * d1[k] + b * d2[k]) if k in floats else end[k] for k in end}
+            r = loss_of(st_)
+            for nm in sets:
+                surf[nm][i, j] = r[nm]
+    return dict(alphas=[float(a) for a in alphas], line={k: [float(x) for x in v] for k, v in line.items()},
+                grid=[float(g) for g in grid], surface={k: v.tolist() for k, v in surf.items()})
 
 
 def save_backbone(m, path):
@@ -506,8 +653,10 @@ def tree_fit(Xtr, ytr, Xva, yva, task, cfg, gpu, seed=11, n_estimators=None):
             m = xgb.XGBRegressor(objective="reg:squarederror", eval_metric="rmse", **kw)
         else:
             m = xgb.XGBClassifier(objective="binary:logistic", eval_metric="logloss", **kw)
-        if early:
-            m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False); best = int(m.best_iteration) + 1
+        if early:                                              # the last eval set (validation) drives early stopping
+            m.fit(Xtr, ytr, eval_set=[(Xtr, ytr), (Xva, yva)], verbose=False); best = int(m.best_iteration) + 1
+            ev = m.evals_result(); met = "rmse" if task == "reg" else "logloss"
+            m.tfcv_curve = dict(metric=met, train=list(map(float, ev["validation_0"][met])), val=list(map(float, ev["validation_1"][met])), best=best)
         else:
             m.fit(Xtr, ytr, verbose=False); best = n_est
     else:
@@ -517,8 +666,11 @@ def tree_fit(Xtr, ytr, Xva, yva, task, cfg, gpu, seed=11, n_estimators=None):
                   reg_lambda=1.0, random_state=seed, n_jobs=-1, verbose=-1)
         m = lgb.LGBMRegressor(**kw) if task == "reg" else lgb.LGBMClassifier(**kw)
         if early:
-            m.fit(Xtr, ytr, eval_set=[(Xva, yva)], callbacks=[lgb.early_stopping(100, verbose=False)])
+            m.fit(Xtr, ytr, eval_set=[(Xtr, ytr), (Xva, yva)], eval_names=["training", "valid"],
+                  callbacks=[lgb.early_stopping(100, verbose=False)])
             best = int(m.best_iteration_ or n_est)
+            ev = m.evals_result_; met = list(ev["valid"])[0]
+            m.tfcv_curve = dict(metric=met, train=list(map(float, ev["training"][met])), val=list(map(float, ev["valid"][met])), best=best)
         else:
             m.fit(Xtr, ytr); best = n_est
     pv = None
@@ -537,14 +689,96 @@ def tree_predict(model, X, task):
     return model.predict(X) if task == "reg" else model.predict_proba(X)[:, 1]
 
 
+# ===================================================================================== 3b. baselines and optimisation checks
+def garch_logrv20(daily, fit_end, horizon=20):
+    """GARCH(1,1) volatility baseline with Student-t errors on the label's own returns (daily close-to-close). Parameters are
+    estimated on returns BEFORE fit_end only and then held fixed; at each date the forecast uses returns up to that date only.
+    Returns a Series indexed by date: ln sqrt(sum of the next `horizon` forecast daily variances), the logrv20 scale."""
+    from arch import arch_model
+    d = daily.sort_values("date")
+    r = d.set_index("date")["close"].astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna() * 100.0
+    tr = r[r.index < pd.Timestamp(fit_end)]
+    if len(tr) < 500:
+        return None
+    res = arch_model(tr, mean="Zero", vol="GARCH", p=1, q=1, dist="t", rescale=False).fit(disp="off", show_warning=False)
+    om, al, be = float(res.params["omega"]), float(res.params["alpha[1]"]), float(res.params["beta[1]"])
+    rv = r.values; s2 = np.empty(len(rv) + 1); s2[0] = float(np.var(tr.values))
+    for i in range(len(rv)):                                # sigma^2_{t+1} = omega + alpha r_t^2 + beta sigma^2_t
+        s2[i + 1] = om + al * rv[i] ** 2 + be * s2[i]
+    phi = min(al + be, 0.9999); lr_var = om / (1 - phi)    # long-run variance; E[sigma^2_{t+h}] = lr + phi^(h-1) (sigma^2_{t+1} - lr)
+    tot = horizon * lr_var + (s2[1:] - lr_var) * (1 - phi ** horizon) / (1 - phi)
+    return pd.Series(0.5 * np.log(np.maximum(tot, 1e-12) / 1e4), index=pd.DatetimeIndex(r.index))
+
+
+def ridge_global_check(X, y, alpha, n_starts=5, iters=80, seed=0):
+    """Ridge regression is strictly convex, so it has exactly one minimum, which has a closed form. This computes it, checks that
+    the gradient there is zero, runs conjugate gradient from n_starts random starting points (recording the gap to the
+    closed-form minimum after every iteration), and evaluates the loss along random lines and on a random plane through it."""
+    X = np.asarray(X, float); y = np.asarray(y, float)
+    Xc, yc = X - X.mean(0), y - y.mean(); n, k = X.shape
+    A = (Xc.T @ Xc) / n + (alpha / n) * np.eye(k); bvec = (Xc.T @ yc) / n
+    w_star = np.linalg.solve(A, bvec)
+    J = lambda w: float(np.mean((Xc @ w - yc) ** 2) + (alpha / n) * (w @ w))
+    J_star = J(w_star)
+    rng = np.random.default_rng(seed); traces = []
+    for _ in range(n_starts):
+        w = rng.normal(0, 3, k); r = bvec - A @ w; pdir = r.copy(); tr = [J(w) - J_star]
+        for _ in range(iters):
+            Ap = A @ pdir; a = (r @ r) / max(pdir @ Ap, 1e-300); w = w + a * pdir; r_new = r - a * Ap
+            tr.append(max(J(w) - J_star, 1e-16))
+            if np.linalg.norm(r_new) < 1e-13:
+                break
+            pdir = r_new + ((r_new @ r_new) / max(r @ r, 1e-300)) * pdir; r = r_new
+        traces.append(tr)
+    scale = max(float(np.linalg.norm(w_star)), 1e-3); ts = np.linspace(-1, 1, 41)
+    dirs = [d / np.linalg.norm(d) * scale for d in rng.normal(size=(3, k))]
+    slices = [[J(w_star + t * d) for t in ts] for d in dirs]
+    g = np.linspace(-1, 1, 25); d1, d2 = dirs[0], dirs[1]
+    surf = [[J(w_star + a * d1 + b * d2) for b in g] for a in g]
+    return dict(J_star=J_star, grad_norm=float(np.linalg.norm(2 * (A @ w_star - bvec))), cond=float(np.linalg.cond(A)),
+                traces=traces, ts=ts.tolist(), slices=slices, grid=g.tolist(), surface=surf, w_star=w_star.tolist())
+
+
+def logistic_global_check(X, y, C, n_starts=5, max_iter=500, seed=0):
+    """L2-regularised logistic regression (the same objective as logit_path) is strictly convex: one global minimum. Fits it with
+    L-BFGS from n_starts random starting points and reports that they reach the same loss and the same weights, the gradient
+    norm at the solution, and every start's loss after each function evaluation."""
+    import torch
+    Xt = torch.as_tensor(np.asarray(X, float), dtype=torch.float64); yt = torch.as_tensor(np.asarray(y, float), dtype=torch.float64)
+    n, k = Xt.shape; lam = 1.0 / (C * n)
+    gen = torch.Generator().manual_seed(seed)
+    finals, weights, traces = [], [], []
+    for _ in range(n_starts):
+        w = (torch.randn(k, generator=gen, dtype=torch.float64) * 2).requires_grad_(True)
+        b = (torch.randn(1, generator=gen, dtype=torch.float64) * 2).requires_grad_(True)
+        opt = torch.optim.LBFGS([w, b], lr=1.0, max_iter=max_iter, tolerance_grad=1e-12, tolerance_change=1e-15, history_size=30,
+                                line_search_fn="strong_wolfe")
+        tr = []
+
+        def closure():
+            opt.zero_grad()
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(Xt @ w + b, yt) + 0.5 * lam * (w * w).sum()
+            loss.backward(); tr.append(float(loss.detach()))
+            return loss
+        for _ in range(5):
+            opt.step(closure)
+        finals.append(tr[-1]); weights.append(torch.cat([w.detach(), b.detach()]).numpy()); traces.append(tr)
+    w, b = torch.as_tensor(weights[int(np.argmin(finals))][:-1]).requires_grad_(True), torch.as_tensor(weights[int(np.argmin(finals))][-1:]).requires_grad_(True)
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(Xt @ w + b, yt) + 0.5 * lam * (w * w).sum(); loss.backward()
+    W = np.stack(weights)
+    return dict(final_losses=finals, max_weight_spread=float(np.max(W.max(0) - W.min(0))), loss_spread=float(max(finals) - min(finals)),
+                grad_norm=float(torch.cat([w.grad, b.grad]).norm()), traces=traces)
+
+
 # ===================================================================================== 4. metrics and month-block bootstrap
 def r2(y, p):
     y = np.asarray(y, float); p = np.asarray(p, float)
     return float(1 - ((y - p) ** 2).sum() / ((y - y.mean()) ** 2).sum())
 
 
-def month_codes(dates):
-    m = pd.to_datetime(pd.Series(dates)).dt.to_period("M").astype(str).values
+def month_codes(dates, freq="M"):
+    """Integer code of each row's calendar period (month by default; "Q" = quarter, "W-FRI" = week) and the number of periods."""
+    m = pd.to_datetime(pd.Series(dates)).dt.to_period(freq).astype(str).values
     u = np.unique(m)
     return np.searchsorted(u, m), len(u)
 
@@ -596,18 +830,60 @@ def accuracy(y, p):
     return float(((np.asarray(p, float) > 0.5) == (np.asarray(y, float) > 0.5)).mean())
 
 
-def board_metrics(task, y, p, dates, base=None, s2=None):
-    """The leaderboard's metric set. Regression: R2, within-month R2, QLIKE, MAE, RMSE, Spearman. Classification: AUC,
-    average precision, accuracy, log loss, Brier skill score, ECE."""
+def best_f1_threshold(y, p, n_grid=200):
+    """The probability threshold with the highest F1 score; meant to be computed on VALIDATION rows and then fixed."""
+    y = np.asarray(y, float) > 0.5; p = np.asarray(p, float)
+    cand = np.unique(np.quantile(p, np.linspace(0.01, 0.99, n_grid)))
+    best = (-1.0, 0.5)
+    for t in cand:
+        pred = p >= t; tp = float((pred & y).sum())
+        f1 = 2 * tp / max(float(pred.sum() + y.sum()), 1e-12)
+        if f1 > best[0]:
+            best = (f1, float(t))
+    return best[1]
+
+
+def class_metrics_at(y, p, thr):
+    """Threshold metrics: precision, recall (sensitivity), F1, specificity, balanced accuracy, accuracy, the share of rows flagged
+    (alert rate), the event rate (prevalence) and the accuracy of always predicting the majority class."""
+    y = np.asarray(y, float) > 0.5; pred = np.asarray(p, float) >= thr
+    tp, fp = float((pred & y).sum()), float((pred & ~y).sum()); fn, tn = float((~pred & y).sum()), float((~pred & ~y).sum())
+    prec = tp / (tp + fp) if tp + fp else float("nan"); rec = tp / (tp + fn) if tp + fn else float("nan")
+    spec = tn / (tn + fp) if tn + fp else float("nan")
+    f1 = 2 * prec * rec / (prec + rec) if prec == prec and rec == rec and prec + rec > 0 else float("nan")
+    prev = float(y.mean())
+    return dict(threshold=float(thr), precision=prec, recall=rec, F1=f1, specificity=spec, balanced_acc=(rec + spec) / 2,
+                accuracy=(tp + tn) / len(y), alert_rate=float(pred.mean()), prevalence=prev, majority_acc=max(prev, 1 - prev),
+                TP=tp, FP=fp, FN=fn, TN=tn)
+
+
+def calibration_line(y, p):
+    """Calibration intercept and slope: logistic regression of the outcome on logit(p). Perfect calibration = (0, 1)."""
+    from sklearn.linear_model import LogisticRegression
+    p = np.clip(np.asarray(p, float), 1e-6, 1 - 1e-6); z = np.log(p / (1 - p)).reshape(-1, 1)
+    lr = LogisticRegression(C=1e6, max_iter=1000).fit(z, np.asarray(y, int))
+    return float(lr.intercept_[0]), float(lr.coef_[0][0])
+
+
+def board_metrics(task, y, p, dates, base=None, s2=None, thr=None):
+    """The leaderboard's metric set. Regression: R2, within-month R2, QLIKE, MAE, RMSE, Spearman; s2 (the variance of the
+    model's VALIDATION residuals) is required for QLIKE, so no test label ever enters the metric. Classification: AUC, average
+    precision, accuracy at 0.5, log loss, Brier skill score vs `base` (training base rate), ECE, prevalence; with thr (a
+    threshold fixed on validation) also precision, recall, F1, specificity, balanced accuracy and alert rate."""
     y = np.asarray(y, float); p = np.asarray(p, float)
     if task == "reg":
+        if s2 is None:
+            raise ValueError("board_metrics needs s2 = the variance of the model's validation residuals (QLIKE bias correction)")
         c, _ = month_codes(dates)
-        s2 = float(np.var(y - p)) if s2 is None else s2
         return dict(R2=r2(y, p), wmR2=wm_r2(y, p, c), QLIKE=qlike(y, p, s2), MAE=float(np.mean(np.abs(y - p))), RMSE=rmse(y, p),
                     Spearman=spearman(y, p))
     base = float(np.mean(y)) if base is None else base
-    return dict(AUC=auc(y, p), AP=avg_precision(y, p), ACC=accuracy(y, p), logloss=logloss(y, p),
-                BSS=1 - brier(y, p) / brier(y, np.full(len(y), base)), ECE=ece(y, p))
+    out = dict(AUC=auc(y, p), AP=avg_precision(y, p), ACC=accuracy(y, p), logloss=logloss(y, p),
+               BSS=1 - brier(y, p) / brier(y, np.full(len(y), base)), ECE=ece(y, p), prevalence=float(np.mean(y)))
+    if thr is not None:
+        cm = class_metrics_at(y, p, thr)
+        out.update({k: cm[k] for k in ("precision", "recall", "F1", "specificity", "balanced_acc", "alert_rate")})
+    return out
 
 
 # ===================================================================================== 4b. Monte Carlo calibration (notebook side)
@@ -682,35 +958,49 @@ def ece(y, p, bins=10):
     return float(tot)
 
 
-def rank_ic(dates, p, x, min_names=20):
-    """Mean cross-sectional Spearman correlation per decision date, and a month-block t-statistic."""
-    df = pd.DataFrame({"d": pd.to_datetime(pd.Series(dates)).values, "p": np.asarray(p, float), "x": np.asarray(x, float)})
-    g = df.groupby("d")
-    ic = g.apply(lambda z: z["p"].rank().corr(z["x"].rank()) if len(z) >= min_names else np.nan, include_groups=False).dropna()
-    if len(ic) < 3:
-        return float("nan"), float("nan")
-    mon = ic.index.to_period("M"); mm = ic.groupby(mon).mean()
-    t = mm.mean() / (mm.std(ddof=1) / np.sqrt(len(mm))) if len(mm) > 2 else float("nan")
-    return float(ic.mean()), float(t)
+def nw_tstat(x, lags=4):
+    """t-statistic of the mean of a time series with a Newey-West (HAC) standard error, allowing for serial correlation up to
+    `lags` periods (overlapping 5-day labels make neighbouring weekly ICs correlated)."""
+    x = np.asarray(x, float); x = x[np.isfinite(x)]; n = len(x)
+    if n < 5:
+        return float("nan")
+    e = x - x.mean(); s = float(e @ e) / n
+    for L in range(1, min(lags, n - 1) + 1):
+        s += 2 * (1 - L / (lags + 1)) * float(e[L:] @ e[:-L]) / n
+    return float(x.mean() / np.sqrt(max(s, 1e-18) / n))
+
+
+def rank_ic(dates, p, x, min_names=20, freq="W-FRI", lags=4):
+    """Rank IC: the Spearman correlation between predictions and outcomes across stocks, computed per calendar WEEK (a sample of
+    stocks rarely shares the exact same decision date), then averaged over weeks. Returns (mean IC, Newey-West t-statistic,
+    number of weeks). Weeks with fewer than min_names stocks are skipped."""
+    df = pd.DataFrame({"w": pd.to_datetime(pd.Series(dates)).dt.to_period(freq).values, "p": np.asarray(p, float), "x": np.asarray(x, float)})
+    df = df[np.isfinite(df.p) & np.isfinite(df.x)]
+    ic = df.groupby("w").apply(lambda z: z["p"].rank().corr(z["x"].rank()) if len(z) >= min_names else np.nan, include_groups=False).dropna()
+    if len(ic) < 5:
+        return float("nan"), float("nan"), int(len(ic))
+    return float(ic.mean()), nw_tstat(ic.sort_index().values, lags), int(len(ic))
 
 
 class MonthBoot:
-    """Month-block bootstrap on one evaluation set: resample calendar months with replacement, keep all their rows.
-    The same resamples are used for every metric and every model comparison on that set."""
+    """Block bootstrap on one evaluation set: resample calendar blocks (months by default, "Q" for quarters) with replacement and
+    keep all their rows, so stocks that move together within a block stay together. The same resamples are used for every
+    metric and every paired model comparison on that set."""
 
-    def __init__(self, dates, n=1000, seed=42):
-        self.c, self.K = month_codes(dates)
+    def __init__(self, dates, n=1000, seed=42, freq="M"):
+        self.c, self.K = month_codes(dates, freq)
+        self.mc, _ = month_codes(dates, "M")                     # within-month R2 always uses calendar months
         rows = [np.flatnonzero(self.c == k) for k in range(self.K)]
         rng = np.random.default_rng(seed)
         self.idx = [np.concatenate([rows[k] for k in rng.integers(0, self.K, self.K)]) for _ in range(n)]
 
     def ci(self, fn, *arrays, uses_months=False):
-        v = [fn(*[a[i] for a in arrays], self.c[i]) if uses_months else fn(*[a[i] for a in arrays]) for i in self.idx]
+        v = [fn(*[a[i] for a in arrays], self.mc[i]) if uses_months else fn(*[a[i] for a in arrays]) for i in self.idx]
         return [float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))], np.asarray(v)
 
     def diff(self, fn, y, p1, p2, uses_months=False):
         if uses_months:
-            v = [fn(y[i], p1[i], self.c[i]) - fn(y[i], p2[i], self.c[i]) for i in self.idx]
+            v = [fn(y[i], p1[i], self.mc[i]) - fn(y[i], p2[i], self.mc[i]) for i in self.idx]
         else:
             v = [fn(y[i], p1[i]) - fn(y[i], p2[i]) for i in self.idx]
         v = np.asarray(v)

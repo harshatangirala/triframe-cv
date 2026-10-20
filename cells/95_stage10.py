@@ -1,8 +1,9 @@
-# ==================================== STAGE 10 (owner only, once): the sealed holdout 2023-01-03 onward ====================================
-# Run this cell only when the frozen config is final. It opens the holdout through holdout_guard (single use, hash-chained log).
-# 1) Look at the frozen config:  print(open(FROZEN_PATH).read())
-# 2) Compute its SHA-256 yourself:  !sha256sum {FROZEN_PATH}
-# 3) Set RUN_HOLDOUT = True below and run; paste the SHA-256 when asked (it is not stored in the notebook).
+# ==================================== STAGE 10 (owner only): the 2023-2026 period ====================================
+# STATUS: EXPOSED. This period was opened for the pilot and for v3 (Stage 0 shows the log), so it is no longer an untouched test.
+# Opening it again for this run is allowed by the guard (a new frozen config) but its results must be labelled "previously viewed
+# period", not "sealed holdout", and nothing may be changed because of them. A genuinely new test needs data after 2026-10-09
+# (e.g. a prospective paper-trading period with the frozen model).
+# To run it anyway: compute the frozen config's SHA-256 yourself (!sha256sum {FROZEN_PATH}), set RUN_HOLDOUT = True, paste it when asked.
 RUN_HOLDOUT = False
 if RUN_HOLDOUT:
     from getpass import getpass
@@ -42,6 +43,6 @@ if RUN_HOLDOUT:
     BUNDLE_CFG["metrics"]["holdout"] = HOLD
     json.dump(BUNDLE_CFG, open(os.path.join(B_DIR, "config.json"), "w"), indent=1, default=float)
     push(os.path.join(B_DIR, "config.json"), "config.json", repo_id=MODEL_REPO, repo_type="model", msg="add holdout results")
-    print(f"Holdout evaluated once in {time.time() - t0:.0f}s and logged in {GOV}.")
+    print(f"2023+ period (previously viewed, NOT an untouched holdout) evaluated in {time.time() - t0:.0f}s and logged in {GOV}.")
 else:
-    print("Holdout not opened (RUN_HOLDOUT = False). This is the default until the owner decides the frozen config is final.")
+    print("2023+ period not opened (RUN_HOLDOUT = False, the v4 default: the period is exposed, so opening it adds little evidence).")

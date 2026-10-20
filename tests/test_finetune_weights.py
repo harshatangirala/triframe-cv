@@ -19,7 +19,9 @@ assert all(np.array_equal(raw[v][:, 0].numpy().astype(np.uint8), ref[v]) for v i
 rng = np.random.default_rng(0)
 xnum = rng.normal(size=(len(g), 33)).astype(np.float32)
 ys = (g["logrv20"].to_numpy(float), g["y_out5"].to_numpy(float), rng.integers(0, 2, len(g)).astype(float))
-m, mu, sd, rec, hist, e2e = T.finetune("resnet18", packed, xnum, ys, np.arange(32), np.arange(32, 48), "cpu", epochs=1, batch=8)
+m, mu, sd, rec, hist, steps, e2e, heads = T.finetune("resnet18", packed, xnum, ys, np.arange(32), np.arange(32, 40), "cpu",
+                                                     val_idx=np.arange(40, 48), epochs=2, patience=2, batch=8, unfreeze=0.5, log_every=1)
+assert len(steps) > 0 and set(heads) == {"init", "best"} and rec["ft"]["n_trainable_backbone"] < rec["n_params"]
 print(hist.round(4).to_string(index=False)); print("record:", {k: rec[k] for k in ("name", "timm_name", "n_params")}, rec["ft"])
 os.makedirs(OUT, exist_ok=True)
 wpath = os.path.join(OUT, "ft_resnet18.safetensors"); T.save_backbone(m, wpath)

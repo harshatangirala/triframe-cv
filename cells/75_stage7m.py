@@ -63,6 +63,21 @@ print(tab_mc.round(4).to_string(index=False))
 print("(mean PIT above 0.5 = real returns tended to come in above the simulation's middle, i.e. the stocks drifted up; the "
       "simulation deliberately has no drift because the direction model has no edge)")
 save_df(tab_mc, "stage7M_monte_carlo_check.csv")
+
+# ---- coverage where it matters: by predicted-risk decile and by year, with the width of the 90% band (wide bands cover trivially)
+q05_u, q95_u = np.quantile(U, [0.05, 0.95])
+yrs_t = pd.to_datetime(pd.Series(DATES[mt])).dt.year.values[np.isfinite(y20[mt]) & np.isfinite(Y["D10"][mt])]
+MC_GROUPS = []
+for grp_name, codes in (("predicted-volatility decile", pd.qcut(xt, 10, labels=False, duplicates="drop")), ("year", yrs_t)):
+    for g_ in np.unique(codes):
+        k_ = codes == g_
+        s_ = T.mc_scores(U, D, xt[k_], lt[k_], ht[k_])
+        width = float(np.median(np.expm1(np.exp(xt[k_]) * q95_u) - np.expm1(np.exp(xt[k_]) * q05_u)))
+        MC_GROUPS.append(dict(group=grp_name, value=int(g_), n=int(k_.sum()), cover_90=s_["coverage"]["90%"], cover_50=s_["coverage"]["50%"],
+                              median_width_90=width, dd_rate=s_["dd_rate"], dd_sim=s_["dd_mean_pred"]))
+MC_GROUPS = pd.DataFrame(MC_GROUPS); save_df(MC_GROUPS, "stage7M_coverage_by_group.csv")
+print("\nTest-year coverage of the 90% band by predicted-volatility decile and by year (raw simulation), with the band's median width:")
+print(MC_GROUPS.round(3).to_string(index=False))
 mpath_mc = os.path.join(RES, "stage7M_monte_carlo.json"); json.dump(MC, open(mpath_mc, "w"), indent=1, default=float)
 push(mpath_mc, f"results_{RUN_TAG}/stage7M_monte_carlo.json")
 

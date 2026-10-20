@@ -10,7 +10,7 @@ repo at start-up, so the trained weights never touch GitHub. Streamlit Community
 ## 1. Make a read-only Hugging Face token (about 2 minutes)
 1. https://huggingface.co/settings/tokens → **Create new token** → type **Fine-grained**.
 2. Name it `streamlit-readonly`. Under *Repositories permissions*, add `KrishnaHarshaTangirala/triframe-cv-model` (and
-   `KrishnaHarshaTangirala/triframe-cv-model-s120` / `-full` once those runs exist) with **Read access to contents** only.
+   `KrishnaHarshaTangirala/triframe-cv-model-s120` / `-s500` / `-full` once those runs exist) with **Read access to contents** only.
 3. Create it and copy the `hf_...` value once. Do not put it in any file or message.
 
 ## 2. Create the app (about 5 minutes)
@@ -43,10 +43,10 @@ ranks them from riskiest to safest. Changing the Monte Carlo settings re-simulat
   paid tier or another provider.
 - **Yahoo Finance:** live prices come from Yahoo Finance, which can rate-limit shared cloud servers. The app retries and caches
   for 10 minutes. If a valid ticker keeps failing, try again later.
-- **Switching to the 120-stock (v3) model:** after the v3 run, give the read-only token access to
-  `KrishnaHarshaTangirala/triframe-cv-model-s120`, change the secret `MODEL_REPO` to that name, then **Reboot app**. Nothing else
-  changes: the app then also shows the leaderboard of all candidate models, percentile-based risk wording and the Monte Carlo
-  settings calibrated in Stage 7M. The full 979-stock run works the same way with `triframe-cv-model-full`.
+- **Switching to a newer model (for example the 500-stock v4 run):** give the read-only token access to the new repo
+  (`KrishnaHarshaTangirala/triframe-cv-model-s500`), change the secret `MODEL_REPO` to that name, then **Reboot app**. Nothing
+  else changes: the app reads the leaderboard, risk percentiles and simulation settings from the bundle. The full 979-stock run
+  works the same way with `triframe-cv-model-full`.
 - **Embedding on krishnaharsha.com:** a public Streamlit app embeds with `<iframe src="https://<your-app>.streamlit.app/?embed=true">`.
 - **Local run:** `pip install -r requirements.txt`, then `BUNDLE_DIR=<folder with the downloaded bundle> streamlit run streamlit_app.py`
   (or set `HF_TOKEN` and `MODEL_REPO` instead of `BUNDLE_DIR`).

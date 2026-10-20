@@ -1,63 +1,54 @@
-# TriFrame CV: how to run the end-to-end notebook (v3)
+# TriFrame CV: how to run the end-to-end notebook (v4)
 
 **File:** `TriFrame_CV_EndToEnd.ipynb`. It is self-contained: it writes its own code modules and needs no other files.
 
 ## 1. One-time setup (about 5 minutes)
 1. Open https://colab.research.google.com, then File → Upload notebook → `TriFrame_CV_EndToEnd.ipynb`.
-2. Runtime → Change runtime type → **A100 GPU**, and switch on **High-RAM**. A T4 also works, about 3× slower.
-3. Click the key icon (Secrets) in the left bar and add:
-   - `HF_TOKEN`: a Hugging Face token with **write** access. Use a new one; the two old tokens were leaked.
-   - Switch on "Notebook access" for it.
+2. Runtime → Change runtime type → **A100 GPU** and **High-RAM**. A T4 would take about three times as long (too long for 500 stocks).
+3. Click the key icon (Secrets) and add `HF_TOKEN`: a Hugging Face token with **write** access; switch on "Notebook access".
 
-## 2. The v3 run: QUICK = True, 120 stocks (about 2-3 hours on an A100)
-- Leave the config cell as it is (`QUICK = True`, `QUICK_TICKERS = 120`) and choose Runtime → Run all. Accept the Google Drive pop-up.
-- The 120 stocks are the pilot's 60 plus 60 more, so the comparison with the pilot is like for like. Its run tag is `s120`: results go
-  to `results_s120/` in the runs repo and the model to its own repo, `triframe-cv-model-s120`, so the live dashboard keeps its current
-  model until you switch it (see `docs/DEPLOY.md`).
-- Lines to check in the output:
-  - Stage 1: `Universe: 979 US stocks in the data (120 used in this run, including all 60 pilot stocks)`.
-  - Stage 4: `Fast chart reader matches ImageStore.triplet ...` (the run stops if it does not) and the table of model sizes and speeds.
-  - Stage 5F: one line per epoch per backbone, then the **frozen vs fine-tuned** table and a one-sentence verdict.
-  - Stage 6L: the model cards and the **leaderboard** (six metrics per target) with three charts.
-  - Stage 7: test results, the test leaderboard and `More data: 60-stock pilot model vs this 120-stock model ... (identical test rows: 4,358)`.
-  - Stage 7M: the Monte Carlo check (a 90% band should hold about 90% of real outcomes).
-  - Stage 8: `Bundle vs notebook test predictions ...`, `feature mismatches 0, chart mismatches 0` and the dashboard-embedding check.
-  - Stage 9: **which models the dashboard uses**, and an example of its plain-language explanation.
-  - Stage 11: `PDF report: ...`. The PDF downloads to your computer and is also saved in Google Drive under `My Drive/triframe_cv/`.
-- Fine-tuning is resumable per backbone (weights are kept on Drive and in the private runs repo), and embeddings are saved chunk by
-  chunk, so after a disconnect just Run all again.
+## 2. The v4 run: QUICK = True, 500 stocks (about 6-8 hours on an A100)
+- Leave the config cell as it is (`QUICK_TICKERS = 500`) and choose Runtime → Run all. Accept the Google Drive pop-up.
+- The 500 stocks contain the pilot's 60 and v3's 120 (same seeds, same draw order), so Stage 7 compares all three runs on the same rows.
+  Results go to `results_s500/` in the runs repo and the model to its own repo, `triframe-cv-model-s500`; the live dashboard keeps its
+  current model until you switch it (`docs/DEPLOY.md`).
+- To save about 1.5 hours, set `FT_STUDY = False` (skips the controlled fine-tuning study). `LANDSCAPE = False` saves a few minutes.
+- Everything long is resumable: embeddings are saved chunk by chunk and every fine-tuning run is saved when it finishes, so after a
+  disconnect just Run all again. The heads (Stage 5) are refitted after a restart (about an hour for 500 stocks).
 
-## 3. Full run: QUICK = False (all 979 stocks, several hours)
-- Set `QUICK = False` and Run all. The model goes to `triframe-cv-model-full`. Fine-tuning uses at most `FT_MAX_TRAIN_ROWS` training
-  chart sets (60,000 by default); raise it if you have the GPU time.
-- The full run stores about 20 GB of frozen embeddings plus about 14 GB of fine-tuned ones on Hugging Face. If that is too much, set
-  `UPLOAD_EMBEDDINGS = False`; they then go to Google Drive (which then needs that space free).
-- The test years (2020-2022) are read once per run. A second evaluation needs `os.environ['TFCV_TEST_REUSE_REASON'] = '<why>'`.
-- The sealed holdout (Stage 10) stays off until you set `RUN_HOLDOUT = True` and paste the frozen config's SHA-256. Each run has its
-  own frozen config; note that every opening is another look at the same 2023-2026 period.
+### Lines to check
+| Stage | What to look for |
+|---|---|
+| 0 | `Metric unit tests passed`; the holdout log lists the two earlier openings and says **EXPOSED**. |
+| 1 | `500 used in this run, containing the 60-stock and 120-stock samples of earlier runs`. |
+| 3 | The baselines table (HAR, ROLL22, EWMA, GARCH, NUM) and `GARCH(1,1) forecasts for ...% of rows`. |
+| 5F | One line per epoch per network; the study table; the seeds line; frozen vs fine-tuned with CIs; learning-curve figures. |
+| 6 | For each target the chosen model, and for image models the gain **by validation year** (`not consistent across years` = rejected). |
+| 6D | `GLOBAL minimum reached (certified)` for the ridge and logistic heads; boosting curves; learning curves; the loss landscape. |
+| 6L | The validation leaderboard with precision, recall and F1. |
+| 7 | Test metrics (historical diagnostic), the quarter-block CI check, and `each earlier run's model vs this ... model` on the same rows. |
+| 7E | ROC / precision-recall / confusion / reliability figures and the metrics table. |
+| 7D | The direction ranking verdict. |
+| 8 | `Bundle vs notebook ...: rows > 1e-3: 0.00%`, `feature mismatches 0, chart mismatches 0`, cosine similarity above 0.995. |
+| 11 | `PDF report: ...` (also downloaded to your computer and saved in Google Drive under `My Drive/triframe_cv/`). |
+
+## 3. What v4 does differently, and why
+- **Selection years stay clean.** Fine-tuning now early-stops on 2015-2016 (inside the training years) instead of the 2017-2019
+  validation years, which v3 used both to stop fine-tuning and to choose between models.
+- **Stricter image rule.** An image model must beat the numbers-only model on validation with a CI above zero *and* in each of the
+  three validation years.
+- **Test years and 2023+ are labelled honestly.** Both were already looked at by earlier runs, so they are a historical diagnostic and
+  an exposed period. Nothing in v4 is chosen with them; Stage 10 stays off by default.
+- **Global minimum.** Certified for the convex heads; for the networks the notebook shows convergence, the held-out minimum, the loss
+  landscape and seed stability. No method can certify a global minimum for a neural network.
 
 ## 4. Decisions that are yours
 | Decision | Default | Notes |
 |---|---|---|
-| Open the 2023+ holdout (Stage 10) | off | Only when you are happy with the frozen config. Compute its SHA-256 yourself (`!sha256sum <path>`) and paste it when asked. Every opening is logged. |
-| Fine-tuning | on, all 7 backbones, up to 4 epochs | `FINETUNE = False` skips it; `FT_BACKBONES = ["resnet18", ...]` limits it. |
-| Live data source | Yahoo Finance (yfinance) | Yahoo's terms limit commercial use. For a public product, consider a licensed data API. |
-| Directional calls | shown only if both validation and the test years show an edge | Otherwise the dashboard gives risk outputs and NO TRADE. |
+| Open the 2023+ period (Stage 10) | off | It has been opened twice already; any result is a "previously viewed period", not a holdout. |
+| Fine-tuning study | on | `FT_STUDY = False` saves about 1.5 hours. |
+| Live data source | Yahoo Finance | Yahoo's terms limit commercial use. |
 
-## 5. Put the dashboard on krishnaharsha.com
-1. Deploy the dashboard on Streamlit Community Cloud (`docs/DEPLOY.md`), which gives a public address such as `https://triframe-cv.streamlit.app`.
-2. The project page on the site embeds it with `<iframe src=".../?embed=true">`.
-
-## 6. What the dashboard does
-1. You choose 1 to 4 companies and upload three TradingView screenshots of each (1W, 1D, 1H), or type the tickers.
-2. It reads the ticker, timeframe and last-bar O/H/L/C from each screenshot (tested on 66 real screenshots: timeframe 100%, legend
-   100%, true ticker among the candidates 66/66) and confirms the ticker by matching the legend to Yahoo bars, which also pins the
-   analysis to the screenshot's date.
-3. It rebuilds the exact training inputs (33 numbers and the three charts) and runs the frozen models.
-4. For each company: expected volatility (gauge), the chance of a 10% drawdown (pie), the chance of beating the median stock (bar),
-   the risk tier and why, a detailed plain-language explanation of every number, a summary table and a primary takeaway, and a Monte
-   Carlo fan of 20-day price paths with the distribution of outcomes.
-5. For several companies: a ranking from riskiest to safest, a risk map, side-by-side bars and side-by-side Monte Carlo bands.
-
-## 7. After the run, send back
-`REPORT_s120.md` and `TriFrame_CV_report_s120.pdf` (Drive: `My Drive/triframe_cv/`), and the notebook with its outputs, for review.
+## 5. After the run, send back
+`REPORT_s500.md`, `TriFrame_CV_report_s500.pdf` and `metrics_provenance.csv` (Drive: `My Drive/triframe_cv/`, or the runs repo),
+and the notebook with its outputs, for review.

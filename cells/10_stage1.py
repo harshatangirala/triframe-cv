@@ -5,16 +5,18 @@ idx = st.index()
 df = st.join_features(idx).merge(st.derived_labels()[["sample_id", "xret5_med", "dd20_pct", "dd20_le_10"]],
                                   on="sample_id", how="left", validate="one_to_one")
 all_tickers = sorted(df["ticker"].unique())
-PILOT_SET = set()
+SUBSETS = {}                                                           # {sample size: set of tickers} for the nested samples
 if QUICK:
-    # the pilot's exact 60 stocks (same draw as the pilot run), plus QUICK_TICKERS - 60 more drawn from the rest
-    n_pilot = min(PILOT_TICKERS, QUICK_TICKERS)
-    pilot = np.random.default_rng(SEED).choice(all_tickers, n_pilot, replace=False)
-    PILOT_SET = set(pilot) if n_pilot == PILOT_TICKERS else set()
-    rest = sorted(set(all_tickers) - set(pilot))
-    extra = np.random.default_rng(SEED + 1).choice(rest, QUICK_TICKERS - n_pilot, replace=False) if QUICK_TICKERS > n_pilot else []
-    keep = sorted(set(pilot) | set(extra))
+    # nested samples: the pilot's exact 60 stocks (same draw as the pilot), then v3's 60 more, then the rest up to QUICK_TICKERS,
+    # each step drawn from the stocks not yet chosen, so every earlier run's stocks are inside this one
+    chain = [n for n in SAMPLE_CHAIN if n < QUICK_TICKERS] + [QUICK_TICKERS]
+    keep = []
+    for i, n in enumerate(chain):
+        pool = all_tickers if not keep else sorted(set(all_tickers) - set(keep))
+        keep = sorted(set(keep) | set(np.random.default_rng(SEED + i).choice(pool, n - len(keep), replace=False)))
+        SUBSETS[n] = set(keep)
     df = df[df["ticker"].isin(keep)]
+PILOT_SET = SUBSETS.get(60, set())
 df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 raw_span = "n/a"
@@ -27,11 +29,11 @@ s1 = pd.DataFrame({"rows": df.groupby(yr).size(), "tickers": df.groupby(yr)["tic
                    "full_1D_window": df.groupby(yr)["n_valid_D"].apply(lambda s: float((s == 126).mean())),
                    "full_1H_window": df.groupby(yr)["n_valid_H"].apply(lambda s: float((s == 140).mean()))}).reset_index(names="year")
 print(f"Universe: {len(all_tickers)} US stocks in the data ({df['ticker'].nunique()} used in this run"
-      + (f", including all {len(PILOT_SET)} pilot stocks" if PILOT_SET else "") + ").")
+      + (", containing the " + " and ".join(f"{n}-stock" for n in SUBSETS if n < QUICK_TICKERS) + " samples of earlier runs" if len(SUBSETS) > 1 else "") + ").")
 print(f"Raw daily/hourly bars (first ticker): {raw_span}.")
 print(f"Chart sets loaded: {len(df):,} rows, decision dates {pd.to_datetime(df['date']).min().date()} to {pd.to_datetime(df['date']).max().date()}.")
 print("Each row = one stock on one decision date: a 104-bar weekly chart, a 126-bar daily chart, a 140-bar hourly chart,")
-print("33 numeric features from the last 126 daily bars, and the labels. Rows from 2023-01-03 on stay sealed until Stage 10.")
+print("33 numeric features from the last 126 daily bars, and the labels. Rows from 2023-01-03 on stay sealed.")
 print(f"Label base rates: beats median over 5 days {df['y_out5'].mean():.3f} | drawdown >= 10 % in 20 days {df['dd20_le_10'].mean():.3f}")
 print(s1.round(3).to_string(index=False))
 save_df(s1, "stage1_rows_by_year.csv")

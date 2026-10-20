@@ -185,6 +185,8 @@ def build_pdf(R, out_path):
     M, NT, H = R["metrics"], R["no_trade"], R["hypotheses"]
     sp = R["splits"]
     v3 = R.get("version") == "v3"
+    v4 = R.get("version") == "v4"
+    test_word = "2020-2022 test years (a historical check: earlier runs had already looked at them)" if v4 else "unseen 2020-2022 test years"
 
     # ---------------------------------------------------------------- page 1: summary
     story.append(P("TriFrame: can pictures of stock charts help predict risk?", "title"))
@@ -199,12 +201,26 @@ def build_pdf(R, out_path):
         f"5 days (<b>direction</b>). We tested {len([c for c in R['cards'] if c.get('family') != 'Control'])} pretrained vision models"
         f"{' (each both frozen and fine-tuned)' if R.get('finetune') else ''} on {R['n_stocks']} US stocks ({R['n_rows']:,} chart sets, "
         f"2001-2022), always against a simple baseline that uses only 33 numbers computed from the same prices. <b>The answer:</b> risk "
-        f"is predictable (volatility R² {_f(M['test_V_R2'], 2)} on the unseen 2020-2022 test years), but the chart pictures {images_add} "
+        f"is predictable (volatility R² {_f(M['test_V_R2'], 2)} on the {test_word}), but the chart pictures {images_add} "
         f"over the numbers there, and {direction}, so the system's default decision is <b>NO TRADE</b>.", "box"))
-    rows = [["Target", "Model chosen", "Test score (2020-2022)", "Sealed holdout (2023-2026)", "In plain words"]]
+    rows = [["Target", "Model chosen", "Test score (2020-2022)", "2023-2026 (already viewed)" if v4 else "Sealed holdout (2023-2026)", "In plain words"]]
     for c in R["chosen"]:
         rows.append([c["target"], c["model"], c["test"], c.get("holdout", "not opened"), c["plain"]])
     table(rows, [1.45, 1.75, 1.15, 1.05, 2.1])
+    if v4:
+        story.append(P("<b>What is new in this version (v4)</b>"))
+        bullets([f"Trained on <b>{R['n_stocks']} stocks</b> (the sample contains the 60 and 120 stocks of the earlier runs, so all three compare on the same rows).",
+                 "<b>Did training reach the minimum?</b> Certified global minima for the convex parts, minimum-of-validation-loss and loss-landscape "
+                 "evidence for the networks (a global minimum cannot be certified for a neural network).",
+                 "<b>Training, validation and loss curves</b> for every fine-tuned network, the boosted trees and the regularised heads.",
+                 "<b>Precision, recall, F1, ROC-AUC, R² and RMSE</b> with ROC and precision-recall curves, confusion matrices and reliability plots.",
+                 "<b>Fixes from an external review</b>: fine-tuning no longer uses the selection years, volatility baselines (EWMA, GARCH), "
+                 "corrected metrics, and a provenance record for every number."])
+        if R.get("audit"):
+            story.append(P(f"<b>Honest status of the data used for testing.</b> The 2020-2022 test years were already read by the earlier runs, so "
+                           f"here they are a historical check, not a fresh test; the 2023-2026 period has been opened {R['audit']['openings']} times "
+                           "before, so it is no longer an untouched holdout either. Every choice in this run was made on the 2017-2019 validation "
+                           "years only. A truly new test needs data after October 2026."))
     if v3:
         story.append(P("<b>What is new in this version (v3)</b>"))
         bullets([f"Trained on <b>{R['n_stocks']} stocks</b> instead of 60 (the new sample contains the pilot's 60, so the two runs compare like for like).",
@@ -225,8 +241,12 @@ def build_pdf(R, out_path):
         + f", {R['n_rows']:,} chart sets in total."))
     story.append(P(
         "Time is never shuffled. Models learn from the <b>training</b> years, are tuned and selected on the <b>validation</b> years, and "
-        "are scored once on the <b>test</b> years. 2023 onward is a sealed <b>holdout</b> that can be opened only once, by the owner, "
-        "after everything is frozen. A 20-day gap at each boundary stops any label from leaking into the next period."))
+        + ("are then checked on the <b>test</b> years (already seen by earlier runs, so a historical check). 2023 onward was a sealed "
+           "<b>holdout</b> but has been opened before, so this run uses it for nothing. " if v4 else
+           "are scored once on the <b>test</b> years. 2023 onward is a sealed <b>holdout</b> that can be opened only once, by the owner, "
+           "after everything is frozen. ")
+        + "A 20-day gap at each boundary stops any label from leaking into the next period. Rows are stock-days with overlapping "
+          "20-day windows, so they are not independent: every confidence interval resamples whole calendar months."))
     image("timeline", 6.9)
     table([["Period", "Years", "Chart sets", "Stocks", "Used for"]] + [[k, v[0], f"{v[1]:,}" if v[1] else "-", v[2] or "-", v[3]] for k, v in sp.items()],
           [1.0, 1.0, 1.0, 0.8, 3.7])
@@ -274,6 +294,33 @@ def build_pdf(R, out_path):
         "down before the test years were opened:</b> per target the best validation score wins, and a model that uses chart pictures "
         "wins only if its improvement over the numbers-only model is clearly above zero (its 95% confidence interval excludes 0)."))
 
+    # ---------------------------------------------------------------- v4: did training reach the minimum? curves
+    if R.get("optimisation"):
+        story.append(P("Did the models reach the global minimum?", "h1"))
+        story.append(P(
+            "Training a model means searching for the settings with the lowest loss (error). For two kinds of model the answer can be "
+            "proven: the <b>ridge</b> and <b>logistic</b> heads are <b>convex</b>, which means their loss surface is a single bowl with exactly "
+            "one lowest point, so the minimum found is the global minimum. We certify it three ways: the slope (gradient) there is zero, "
+            "every random starting point ends at the same answer, and the loss rises in every direction around it. <b>Boosted trees</b> are "
+            "built step by step; their validation loss has a lowest point, which early stopping keeps. <b>Neural networks are not convex</b>: "
+            "no method can prove a global minimum for them, and the lowest training loss is not even the goal, because it usually means "
+            "memorising the training years. What we show instead is that training converged, the kept checkpoint is the lowest point of the "
+            "held-out loss, the trained network sits at the bottom of its valley in the loss landscape, and different random seeds land in the same place."))
+        table([["Part of the model", "Convex?", "Verdict"]] + R["optimisation"]["rows"], [2.6, 0.9, 3.6])
+        image("convex", 7.0, "Left to right: ridge, gap to the closed-form minimum from 5 random starts; ridge loss along random lines "
+                              "and on a random plane (lowest at the solution); logistic regression from 5 random starts.")
+        image("landscape", 7.0, "The fine-tuned network's loss landscape: along the straight line from its starting point (0) to the "
+                                "trained network (1), and on random planes through it (star = trained network).")
+        image("boosting", 7.0, "Boosted trees: training and validation loss as trees are added; the dashed line is the validation minimum that was kept.")
+    if R.get("figures", {}).get("finetune"):
+        story.append(P("Training, validation and loss curves", "h1"))
+        story.append(P(
+            "Each panel follows one network through fine-tuning: the loss on fixed training rows (eval mode), on the early-stopping slice "
+            "inside the training years, and on the validation years (logged only). Training loss keeps falling while the held-out losses "
+            "turn up after a few epochs: that is overfitting, and the epoch with the lowest early-stopping loss (red line) is the one kept."))
+        image("finetune", 7.0)
+        image("learning", 6.4, "Learning curves: validation score as the number of training stocks grows (does more data help?).")
+
     # ---------------------------------------------------------------- step 6: results
     story.append(P("Step 6: results - which models won, and how good they are", "h1"))
     rows = [["Target", "Inputs", "Vision network", "Head", "Validation", "Test (95% CI)"]]
@@ -288,6 +335,35 @@ def build_pdf(R, out_path):
         hyp.append(f"<b>Sanity checks.</b> {R['controls']}")
     bullets(hyp)
 
+    if R.get("evaluation"):
+        story.append(P("Evaluation metrics: precision, recall, F1, ROC-AUC, R² and RMSE", "h1"))
+        thr_ = R["evaluation"].get("thresholds", {})
+        story.append(P(
+            "<b>R²</b> is the share of the ups and downs explained (volatility); <b>RMSE</b> the typical error in log volatility. For the yes/no "
+            "targets, a stock is flagged when its predicted chance passes a threshold fixed on the validation years (the one with the best F1"
+            + (": drawdown " + f"{thr_.get('D10', float('nan')):.2f}" + ", direction " + f"{thr_.get('O5', float('nan')):.2f}" if thr_ else "")
+            + "). <b>Precision</b> is the share of flagged stocks that really had the event; <b>recall</b> the share of events that were "
+              "flagged; <b>F1</b> balances the two; <b>ROC-AUC</b> is the chance a stock with the event is ranked above one without. Accuracy "
+              "alone would mislead: if 29% of cases have a drawdown, always saying 'no' is already 71% accurate."))
+        table([["Target", "Years", "Model", "Score", "", "", ""]] + R["evaluation"]["rows"], [1.6, 0.8, 1.1, 0.9, 1.0, 0.9, 0.8])
+        image("eval_D10", 7.0, "Drawdown model: ROC and precision-recall curves, precision / recall / F1 against the threshold, the test-year "
+                               "confusion matrix and the reliability plot.")
+        image("eval_V", 7.0, "Volatility model: predicted vs realised, errors, calibration by risk decile, and R² by year.")
+        image("metric_bars", 7.0)
+    if R.get("progress"):
+        n_prog = len(story)
+        story.append(P("Did R² improve? 60, 120 and this run's stocks on the same rows", "h1"))
+        story.append(P("Each earlier run's frozen model and this run's model are scored on the earlier run's own stocks and exactly the same "
+                       "rows, so the comparison isolates what changed (mainly more training data). Validation = the selection years; test = the "
+                       "historical check."))
+        table([["Earlier run", "Target", "Metric", "Earlier, validation", "This run, validation", "Earlier, test", "This run, test"]] + R["progress"]["rows"],
+              [1.3, 1.4, 0.6, 1.0, 1.0, 1.0, 1.0])
+        story[n_prog:] = [KeepTogether(story[n_prog:])]
+        image("vs_prev", 7.0)
+    if R.get("direction"):
+        story.append(P(f"<b>Direction as a ranking (separate experiment).</b> Fitting the continuous 5-day excess return and scoring weekly "
+                       f"rankings: {E(R['direction'])}."))
+
     # ---------------------------------------------------------------- step 7: fine-tuning
     story.append(P("Step 7: did we fine-tune, and did it help?", "h1"))
     if R.get("finetune"):
@@ -295,7 +371,7 @@ def build_pdf(R, out_path):
         story.append(P(F["verdict"]))
         if F.get("rows"):
             table([["Model", "Frozen R²", "Fine-tuned R²", "Change (95% CI)", "Training time"]] + F["rows"], [2.0, 1.0, 1.1, 1.7, 1.2])
-        image("finetune", 7.0)
+        image("finetune_bars" if R.get("figures", {}).get("finetune_bars") else "finetune", 7.0)
     else:
         story.append(P(
             "<b>No.</b> In this run every vision network was <b>frozen</b>: the pretrained weights were used as they are, and only the small "
@@ -365,7 +441,8 @@ def build_pdf(R, out_path):
            ["Calibration", "Whether stated chances come true as often as stated (30% events happen about 30% of the time)."],
            ["Embedding / PCA", "The numbers a vision network outputs for a picture / a way to compress them to the most informative 128."],
            ["Month-block bootstrap", "Confidence intervals made by resampling whole calendar months, because stocks move together within a month."],
-           ["Holdout", "The most recent data (2023 onward), sealed until all choices are frozen and then opened once."]],
+           ["Holdout", "The most recent data (2023 onward), meant to stay sealed until all choices are frozen and then be opened once"
+                       + ("; in this project it has been opened twice, so it is now treated as already seen." if v4 else ".")]],
           [1.5, 5.6])
 
     def footer(canvas, doc):

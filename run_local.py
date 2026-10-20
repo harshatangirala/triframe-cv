@@ -27,9 +27,11 @@ for i, c in enumerate(code_cells):
     t0 = time.time()
     exec(compile(src, f"cell{i}", "exec"), ns)
     if i == 0:                                    # local overrides after the config cell
-        ns.update(QUICK_TICKERS=20, PILOT_TICKERS=10, CHUNK_TICKERS=8, N_BOOT=200, PCA_DIM=16, FACTORY=stub_factory,
-                  FT_BACKBONES=["resnet18", "convnext_tiny"], FT_EPOCHS=2, FT_MAX_TRAIN_ROWS=1500, FT_MAX_VAL_ROWS=600,
-                  MC_DRAWS=4000, MC_TDF_GRID=[4, 30], MC_LOWK_GRID=[0.5, 1.0])
+        ns.update(QUICK_TICKERS=20, SAMPLE_CHAIN=[8, 14, 20], CHUNK_TICKERS=8, N_BOOT=200, LB_BOOT=100, PCA_DIM=16, FACTORY=stub_factory,
+                  FT_BACKBONES=["resnet18", "convnext_tiny"], FT_EPOCHS=3, FT_PATIENCE=2, FT_ROWS_PER_EPOCH=800, FT_MAX_STOP_ROWS=400,
+                  FT_MAX_VAL_ROWS=400, FT_STUDY_TOP=1, FT_SEEDS=[12], LANDSCAPE_ROWS=64, LANDSCAPE_GRID=5,
+                  MC_DRAWS=4000, MC_TDF_GRID=[4, 30], MC_LOWK_GRID=[0.75, 1.0, 1.5],
+                  PREVIOUS_RUNS={"pilot bundle (local stand-in)": (os.environ.get("TFCV_PILOT_BUNDLE", ""), 8)})
     if os.environ.get("TFCV_FORCE_FT") and "STAGE 6: compare, select" in src:
         # test hook: pretend a fine-tuned backbone won the volatility selection, so every later stage runs the fine-tuned path
         fs = f"NUM+IMG:{os.environ['TFCV_FORCE_FT']}"

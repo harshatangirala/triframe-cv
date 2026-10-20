@@ -5,10 +5,17 @@ METRIC_FN = {"V": T.r2, "O5": T.logloss, "D10": T.brier}
 PREREG = {
     "selection": "Per target the best validation score wins (V: R2, O5: log loss, D10: Brier). Candidates: numbers only, and numbers "
                  "and/or images from every pretrained backbone, frozen or fine-tuned (Stage 5F), on equal terms. A model that uses chart "
-                 "images is chosen only if its validation gain over the best numbers-only model has a month-block 95% CI that excludes 0.",
-    "finetune": "Fine-tuning (Stage 5F): each pretrained backbone is trained end to end on training rows only (shared backbone over the "
-                "three views + 33 numbers, multi-task loss: MSE on volatility, plain cross-entropy on direction and drawdown; AdamW, "
-                "cosine schedule, no augmentation), with early stopping on the validation loss; its embeddings then use the same PCA and heads.",
+                 "images is chosen only if (a) its validation gain over the best numbers-only model has a month-block 95% CI that excludes 0 "
+                 "AND (b, new in v4) the gain has the right sign in every validation year separately (a gain made in one year only is not "
+                 "trusted). The 2020-2022 test years and the exposed 2023+ holdout are never used to choose.",
+    "finetune": "Fine-tuning (Stage 5F): each pretrained backbone is trained end to end (shared backbone over the three views + 33 numbers, "
+                "multi-task loss: MSE on volatility, plain cross-entropy on direction and drawdown; AdamW, warm-up + cosine schedule, no "
+                "augmentation). v4: it learns from training rows whose labels end before FT_INNER, and early stopping uses the FT_INNER "
+                "slice of the training years, so the validation years are untouched by fine-tuning. A controlled study (last 25% / 50% "
+                "of the network, risk-only loss) runs on the best backbones; per backbone the variant with the lowest inner-validation "
+                "risk loss is carried forward. Extra seeds measure run-to-run variation and are not used for selection.",
+    "thresholds": "Decision thresholds for precision / recall / F1 (drawdown and direction) are the F1-maximising thresholds on the "
+                  "calibrated VALIDATION probabilities, fixed before the test years are read.",
     "monte_carlo": "Stage 7M: the simulation's tail shape and intraday-low range are chosen on validation (return coverage, then drawdown "
                    "Brier); the dashboard matches the drawdown model by default unless that worsens the validation coverage error by "
                    "more than 1 percentage point. Checked once on the test years.",
@@ -38,7 +45,11 @@ for t in TARGETS:
     if best["feature_set"] != "NUM":
         ci, _ = BOOT_VA[t].diff(METRIC_FN[t], y, VAL_PRED[key(best)], VAL_PRED[key(num)])
         gate = dict(candidate=f"{best['feature_set']} / {best['head']}", delta=float(best[met] - num[met]), ci=ci)
-        if (ci[0] > 0) if sign > 0 else (ci[1] < 0):
+        yrs_ = pd.to_datetime(pd.Series(DATES[VA & OK[t]])).dt.year.values
+        per_year = {int(yy_): float(sign * (METRIC_FN[t](y[yrs_ == yy_], VAL_PRED[key(best)][yrs_ == yy_])
+                                            - METRIC_FN[t](y[yrs_ == yy_], VAL_PRED[key(num)][yrs_ == yy_]))) for yy_ in np.unique(yrs_)}
+        gate.update(per_year_gain=per_year, consistent=bool(all(v > 0 for v in per_year.values())))
+        if ((ci[0] > 0) if sign > 0 else (ci[1] < 0)) and gate["consistent"]:
             chosen = best
     SEL[t] = dict(feature_set=chosen["feature_set"], head=chosen["head"], gate=gate,
                   fit={k: v for k, v in FITS[key(chosen)].items() if k not in ("model", "coef", "intercept")})
@@ -48,7 +59,9 @@ for t in TARGETS:
     SEL[t]["h1_images"] = dict(feature_set=multi.iloc[0]["feature_set"], head=multi.iloc[0]["head"]) if len(multi) else None
     VAL_SUMMARY[t] = {k: float(chosen[k]) for k in chosen.index if k in ("R2", "wmR2", "QLIKE", "MAE", "AUC", "logloss", "brier", "BSS", "ECE", "rankIC", "rankIC_t")}
     print(f"{t}: chosen {chosen['feature_set']} / {chosen['head']} ({met} {chosen[met]:.4f})"
-          + (f"; best image model {gate['candidate']} delta {gate['delta']:+.4f}, CI [{gate['ci'][0]:+.4f}, {gate['ci'][1]:+.4f}]" if gate else ""))
+          + (f"; best image model {gate['candidate']} delta {gate['delta']:+.4f}, CI [{gate['ci'][0]:+.4f}, {gate['ci'][1]:+.4f}], "
+             f"gain by year {', '.join(f'{k}: {v:+.4f}' for k, v in gate['per_year_gain'].items())}"
+             f"{'' if gate['consistent'] else ' (not consistent across years)'}" if gate else ""))
 
 # ---- H2 (validation): do pretrained backbones differ in image-only volatility R2?
 yV, bV = Y["V"][VA & OK["V"]], BOOT_VA["V"]
@@ -131,6 +144,9 @@ REFERENCE = dict(vol_ann_median_train=float(np.median(C.ann_vol(Y["V"][TR & OK["
                  vol_ann_q20_train=float(np.quantile(C.ann_vol(Y["V"][TR & OK["V"]]), 0.2)),
                  vol_ann_q80_train=float(np.quantile(C.ann_vol(Y["V"][TR & OK["V"]]), 0.8)),
                  dd10_rate={s_: float(np.nanmean(Y["D10"][m_ & OK["D10"]])) for s_, m_ in (("train", TR), ("val", VA))})
+THRESH = {t: T.best_f1_threshold(Y[t][VA & OK[t]], cal(t, _vp(t))) for t in ("O5", "D10")}
+print("Decision thresholds fixed on validation (F1-maximising, calibrated probabilities): "
+      + ", ".join(f"{t} {v:.3f}" for t, v in THRESH.items()))
 save_df(abst_va, "stage6_abstention_validation.csv")
 print("\nAbstention on validation (calibrated direction probabilities):")
 print(abst_va.round(4).to_string(index=False))
@@ -158,9 +174,12 @@ FROZEN = dict(run_tag=RUN_TAG, created_utc=dt.datetime.now(dt.timezone.utc).isof
               split_ids_sha256=_sha(os.path.join(RES, f"split_ids_{RUN_TAG}.parquet")),
               selection=SEL, calibrators=CAL, volatility_residuals=VRES, rule=RULE, prereg=PREREG, H2=H2, controls=CONTROLS,
               n_configurations_tried=len(LEDGER), backbones=NAMES, ft_backbones=FT_NAMES, pca_dim=PCA_DIM, seed=SEED,
-              finetune=dict(enabled=bool(FINETUNE), epochs=FT_EPOCHS, lr_backbone=FT_LR_BACKBONE, lr_head=FT_LR_HEAD,
-                            max_train_rows=FT_MAX_TRAIN_ROWS, max_val_rows=FT_MAX_VAL_ROWS),
-              risk_quantiles=RISKQ, reference=REFERENCE)
+              finetune=dict(enabled=bool(FINETUNE), max_epochs=FT_EPOCHS, patience=FT_PATIENCE, inner_slice=FT_INNER,
+                            rows_per_epoch=FT_ROWS_PER_EPOCH, lr_backbone=FT_LR_BACKBONE, lr_head=FT_LR_HEAD, study=bool(FT_STUDY),
+                            study_variants={k: {kk: list(vv) if isinstance(vv, tuple) else vv for kk, vv in v.items()} for k, v in FT_STUDY_VARIANTS.items()},
+                            extra_seeds=list(FT_SEEDS), carried=FT_NAMES,
+                            best_setup=BEST_FT if FINETUNE else None),
+              risk_quantiles=RISKQ, reference=REFERENCE, thresholds=THRESH, run_id=RUN_ID, code_hash=CODE_HASH, config_hash=CONFIG_HASH)
 FROZEN_PATH = os.path.join(WORK, "frozen", f"frozen_config_{RUN_TAG}.json")
 json.dump(FROZEN, open(FROZEN_PATH, "w"), indent=1, default=float)
 shutil.copy(FROZEN_PATH, os.path.join(DRIVE_DIR, os.path.basename(FROZEN_PATH)))
