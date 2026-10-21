@@ -10,10 +10,27 @@ The short answer from the pilot run: **the numbers carry the signal.** Volatilit
 images do not add a significant improvement on the test years; and there is no detectable 5-day directional edge, so the
 decision layer defaults to **NO TRADE**.
 
-> **Scope.** Results below come from two completed runs: v3 on 120 stocks (frozen **and** fine-tuned backbones) and the earlier
-> 60-stock pilot (frozen only). **Notebook v4** (this version) runs 500 stocks with the fixes listed below; its results will be
-> added once it has run. Honest status of the evaluation periods: the 2020-2022 test years have now been read by both runs, and the
+> **Scope.** Results below come from three completed runs: v4 on 500 stocks, v3 on 120 stocks and the earlier 60-stock pilot
+> (frozen only). Notebook v4 includes the fixes listed below. Honest status of the evaluation periods: the 2020-2022 test years have now been read by both runs, and the
 > 2023-2026 period has been opened twice, so neither is an untouched test any more (see `docs/triframe_audit.md`).
+
+## Results (v4, 500 stocks, 236,520 chart sets)
+
+| Target | Chosen model | Validation 2017-2019 | Test 2020-2022 (historical diagnostic) |
+|---|---|---|---|
+| 20-day volatility | numbers + fine-tuned ConvNeXt-Tiny charts, boosted trees | R² 0.592 | R² 0.503 (95% CI 0.25-0.65), RMSE 0.381 |
+| Drawdown of 10% or more within 20 days | numbers + fine-tuned ConvNeXt-Tiny charts, boosted trees | AUC 0.739 | AUC 0.648 (0.59-0.69) |
+| Beats the median stock over 5 days | numbers only, boosted trees | AUC 0.514 | AUC 0.510 (0.500-0.521) |
+
+- **Did scores improve?** On the same stocks and rows as the earlier runs, test volatility R² rose by about +0.01 (0.496 to 0.510 and
+  0.503 to 0.513); drawdown AUC fell by about 0.008 and direction is unchanged. Validation scores rose for every target.
+- **Images still add nothing significant on test:** volatility ΔR² +0.003 (95% CI -0.018 to +0.026), direction ΔAUC -0.002.
+- **Fine-tuning** (early-stopped on 2015-2016, so validation stays clean) raised validation R² in 9 of 9 comparisons; training only
+  the last 25-50% of a network gained nothing.
+- **Training reached the minimum where that can be proven:** certified global minimum for the ridge and logistic heads.
+- **Weak spots:** 2020 volatility R² 0.27 vs about 0.60 in other years; drawdown calibration error 0.058 (v3: 0.028); the chosen
+  drawdown model ranked last of 17 on test, within noise.
+- Full write-up with achievements, observations and next steps: [`results/REPORT_s500.md`](results/REPORT_s500.md).
 
 ## Results (v3, 120 stocks, 56,099 chart sets)
 

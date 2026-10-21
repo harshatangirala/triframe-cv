@@ -39,6 +39,11 @@ def plot(fig, key):
 
 
 st.title(DL.TITLE)
+with st.expander("Model results: 500-stock run (what the models can and cannot do)"):
+    try:
+        st.markdown(md(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "REPORT_s500.md"), encoding="utf-8").read()))
+    except OSError:
+        st.info("The results write-up is in the results folder of the GitHub repository.")
 try:
     B = get_bundle()
 except Exception as e:                      # private repo without a token, wrong repo name, no network
