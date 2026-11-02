@@ -62,7 +62,7 @@ report, so shifts of about 0.01 may be noise.
 
 ## What to improve next
 
-1. Add volatility measured from the hourly bars to the numeric features (today all 33 come from daily bars).
+1. ~~Add volatility measured from the hourly bars to the numeric features.~~ Tested later in the paper (`paper/`): it adds about zero, so this is no longer recommended. The paper also shows a within-month gain from images that the pooled R² hides.
 2. Evaluate year by year across 2008-2022 so both crises are judged.
 3. Average the top few models instead of picking one winner.
 4. Floor the lowest drawdown probability and recalibrate on a recent window.

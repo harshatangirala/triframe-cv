@@ -1,0 +1,9 @@
+backbone,run,name,inner_risk_loss,best_epoch,epochs,trainable_M,minutes,val_R2_V_network
+swin_tiny_patch4_window7_224,Swin-T (fine-tuned),ft_swin_tiny_patch4_window7_224,0.8111387001197357,3,5,27.519354,16.29606474240621,0.5769893224835685
+swin_tiny_patch4_window7_224,"Swin-T (fine-tuned, last 25%)",ft_p25.swin_tiny_patch4_window7_224,0.8073390366552053,2,4,7.087872,7.053914185365041,0.5436524624953878
+swin_tiny_patch4_window7_224,"Swin-T (fine-tuned, last 50%)",ft_p50.swin_tiny_patch4_window7_224,0.8003644865930459,5,7,14.1798,12.671665581067403,0.5473994994004465
+swin_tiny_patch4_window7_224,"Swin-T (fine-tuned, risk targets only)",ft_risk.swin_tiny_patch4_window7_224,0.8141049027932441,3,5,27.519354,16.274882503350575,0.5783105585022261
+convnext_tiny,ConvNeXt-Tiny (fine-tuned),ft_convnext_tiny,0.8113831763329262,2,4,27.820128,10.574599313735963,0.5768241065953617
+convnext_tiny,"ConvNeXt-Tiny (fine-tuned, last 25%)",ft_p25.convnext_tiny,0.8104637973494144,2,4,7.124736,5.112995159626007,0.547469575020378
+convnext_tiny,"ConvNeXt-Tiny (fine-tuned, last 50%)",ft_p50.convnext_tiny,0.8188178591511712,2,4,14.25024,5.295714938640595,0.543965884596838
+convnext_tiny,"ConvNeXt-Tiny (fine-tuned, risk targets only)",ft_risk.convnext_tiny,0.8153612746700469,2,4,27.820128,10.48512278397878,0.5749376471024652

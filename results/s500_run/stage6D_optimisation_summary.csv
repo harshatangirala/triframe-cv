@@ -1,0 +1,7 @@
+component,convex,evidence,verdict
+Ridge head (volatility),yes,closed form; gradient 6e-16; 5 random starts converge,GLOBAL minimum reached (certified)
+Logistic head (drawdown),yes,5 random starts agree to 3e-14; gradient 2e-08,GLOBAL minimum reached (certified)
+"Boosted trees (V, NUM+IMG:ft_convnext_tiny)",no (greedy),validation rmse lowest at 364 trees; training keeps falling,minimum of the validation curve kept (early stopping)
+"Boosted trees (O5, NUM)",no (greedy),validation logloss lowest at 104 trees; training keeps falling,minimum of the validation curve kept (early stopping)
+"Boosted trees (D10, NUM+IMG:ft_convnext_tiny)",no (greedy),validation logloss lowest at 79 trees; training keeps falling,minimum of the validation curve kept (early stopping)
+Fine-tuned network (ConvNeXt-Tiny (fine-tuned)),no,training loss fell from 1.461 to 1.311; held-out loss lowest at epoch 2 of 4; lowest point on the line at alpha 1.0; seeds: validation R² sd 0.007,converged to a stable minimum of the held-out loss; a GLOBAL minimum cannot be certified for a network

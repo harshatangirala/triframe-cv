@@ -14,6 +14,17 @@ decision layer defaults to **NO TRADE**.
 > (frozen only). Notebook v4 includes the fixes listed below. Honest status of the evaluation periods: the 2020-2022 test years have now been read by both runs, and the
 > 2023-2026 period has been opened twice, so neither is an untouched test any more (see `docs/triframe_audit.md`).
 
+## Research paper
+
+**[What Do Charts Add? Multi-Horizon Price Images and the Cross-Section of Equity Risk](paper/TriFrame_paper_SSRN_draft.pdf)** (working paper draft, November 2026). Sources, tables, figures and analysis scripts are in [`paper/`](paper).
+
+The paper goes further than the course report and changes one headline. The pre-specified test still finds no gain in pooled R² (+0.003, 95% CI -0.018 to +0.026). Splitting the error shows why: images raise **within-month** R² by +0.020 (95% CI 0.012 to 0.027) but do not improve the market-wide level forecast. This cross-sectional test was added after the data were seen, so treat it as a hypothesis for fresh data.
+
+Corrections to earlier material in this repository:
+- Hourly realised volatility was suggested as the next lever for R². Tested in the paper, it adds about zero.
+- "Beats every classical model" holds under squared error against GARCH and EWMA; the pooled edge over HAR is not significant, and under QLIKE the simple linear models win on the test years.
+- GARCH(1,1) was skipped in the Colab run because the raw bars were not there. It is scored in the paper's supplementary analysis (test R² 0.439).
+
 ## Results (v4, 500 stocks, 236,520 chart sets)
 
 | Target | Chosen model | Validation 2017-2019 | Test 2020-2022 (historical diagnostic) |
@@ -61,7 +72,9 @@ decision layer defaults to **NO TRADE**.
 | Executed notebooks with all outputs | [`notebooks/`](notebooks): v4 (500 stocks), v3 (120 stocks), pilot (60 stocks) |
 | External review brief that shaped v4 | `docs/external_review_brief.md` |
 
-Not published: price data, chart caches, features, embeddings and trained weights (the data licence is unresolved). The trained
+Also here: the [course report and slides](reports), aggregate results of the 500-stock run in [`results/s500_run/`](results/s500_run) including `metrics_provenance.csv` and the full configuration `ledger.csv`, and the [data card](docs/DATA_CARD.md).
+
+Not published: price data, chart caches, features, embeddings, row-level predictions and trained weights (the source data declare no licence). The trained
 models live in private Hugging Face repositories.
 
 ## What is new in v4
