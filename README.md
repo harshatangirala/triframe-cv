@@ -18,12 +18,12 @@ directional edge, so the decision layer defaults to **NO TRADE**.
 
 **[What Do Charts Add? Multi-Horizon Price Images and the Cross-Section of Equity Risk](paper/Tangirala_What_Do_Charts_Add.pdf)** (working paper, 2 November 2026; AI use is itemized in its Appendix B). Sources, tables, figures and analysis scripts are in [`paper/`](paper).
 
-The paper goes further than the course report and changes one headline. The pre-specified test still finds no gain in pooled R² (+0.003, 95% CI -0.018 to +0.026). Splitting the error shows why: images raise **within-month** R² by +0.020 (95% CI 0.012 to 0.027) but do not improve the market-wide level forecast. This cross-sectional test was added after the data were seen, so treat it as a hypothesis for fresh data.
+The paper goes further than the course report and changes one headline. The pre-specified test still finds no gain in pooled R² (+0.003, 95% CI -0.018 to +0.026). Splitting the error shows why: images raise **within-month** R² by +0.020 (95% CI 0.011 to 0.027) but do not improve the market-wide level forecast. This cross-sectional test was added after the data were seen, so treat it as a hypothesis for fresh data.
 
 Corrections to earlier material in this repository:
 - Hourly realised volatility was suggested as the next lever for R². Tested in the paper, it adds about zero.
 - "Beats every classical model" holds under squared error against GARCH and EWMA; the pooled edge over HAR is not significant, and under QLIKE the simple linear models win on the test years.
-- GARCH(1,1) was skipped in the Colab run because the raw bars were not there. It is scored in the paper's supplementary analysis (test R² 0.439).
+- GARCH(1,1) was skipped in the Colab run because the raw bars were not there. It is scored in the paper's supplementary analysis (test R² 0.433).
 
 ## Results (v4, 500 stocks, 236,520 chart sets)
 
@@ -35,7 +35,7 @@ Corrections to earlier material in this repository:
 
 - **Did scores improve?** On the same stocks and rows as the earlier runs, test volatility R² rose by about +0.01 (0.496 to 0.510 and
   0.503 to 0.513); drawdown AUC fell by about 0.008 and direction is unchanged. Validation scores rose for every target.
-- **Images add no significant gain in overall R² on test:** volatility ΔR² +0.003 (95% CI -0.018 to +0.026), direction ΔAUC -0.002. A later, not pre-specified test finds a within-month gain of +0.020 (95% CI 0.012 to 0.027); see the paper.
+- **Images add no significant gain in overall R² on test:** volatility ΔR² +0.003 (95% CI -0.018 to +0.026), direction ΔAUC -0.002. A later, not pre-specified test finds a within-month gain of +0.020 (95% CI 0.011 to 0.027); see the paper.
 - **Fine-tuning** (early-stopped on 2015-2016, so validation stays clean) raised validation R² in 9 of 9 comparisons; training only
   the last 25-50% of a network gained nothing.
 - **Training reached the minimum where that can be proven:** certified global minimum for the ridge and logistic heads.

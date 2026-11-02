@@ -102,8 +102,11 @@ def fit_tree(X, t):
         if best is None or s > best[0]:
             best = (s, m, cfg, n, pv)
     s, m, cfg, n, pv = best
-    pred = m.predict(X) if task == "reg" else m.predict_proba(X)[:, 1]
-    return pd.Series(pred, index=df.index), dict(cfg=cfg, n_trees=n)
+    pred = m.predict(X) if task == "reg" else m.predict_proba(X)[:, 1]        # validation rows: the train-only model, as in selection
+    fit = (TR | VA) & ok                                                      # test rows: refit on train + validation with the frozen settings (notebook Stage 7)
+    m2, _, _ = T.tree_fit(X[fit], Y[t][fit], None, None, task, cfg, False, seed=11, n_estimators=n)
+    p2 = m2.predict(X) if task == "reg" else m2.predict_proba(X)[:, 1]
+    return pd.Series(np.where(TE, p2, pred), index=df.index), dict(cfg=cfg, n_trees=n)
 
 
 P, INFO = {}, {}
@@ -114,8 +117,9 @@ for name, X in (("NUM", XN), ("NUMH", XH)):
 
 # ------------------------------------------------------------------ linear volatility baselines (train-only fit)
 def linear(cols):
-    X = std_matrix(cols); ok = np.isfinite(Y["V"]) & TR
-    return pd.Series(LinearRegression().fit(X[ok], Y["V"][ok]).predict(X), index=df.index)
+    X = std_matrix(cols); ok = np.isfinite(Y["V"]); a_ = LinearRegression().fit(X[ok & TR], Y["V"][ok & TR]).predict(X)
+    b_ = LinearRegression().fit(X[ok & (TR | VA)], Y["V"][ok & (TR | VA)]).predict(X)    # test rows: refit on train + validation
+    return pd.Series(np.where(TE, b_, a_), index=df.index)
 
 
 P[("HAR", "V")] = linear([f"x_{k}_{w}" for k in ("cc", "park", "gk") for w in (1, 5, 22)] + ["x_ewma_win"])
@@ -136,7 +140,7 @@ gr = [x for x in Parallel(n_jobs=10)(delayed(garch_one)(t) for t in tickers) if 
 g = pd.concat(gr); g["date"] = pd.to_datetime(g["date"])
 gcol = df[["ticker", "date"]].merge(g, on=["ticker", "date"], how="left")["g"].to_numpy()
 cover = float(np.isfinite(gcol[TE]).mean()); n_garch = len(gr)
-ok = np.isfinite(gcol) & TR & np.isfinite(Y["V"])
+ok = np.isfinite(gcol) & (TR | VA) & np.isfinite(Y["V"])                       # GARCH parameters stay pre-2017; only the linear map is refitted, as for other baselines
 lr = LinearRegression().fit(gcol[ok][:, None], Y["V"][ok])
 P[("GARCH", "V")] = pd.Series(np.where(np.isfinite(gcol), lr.predict(np.nan_to_num(gcol)[:, None]), np.nan), index=df.index)
 print("GARCH stocks", n_garch, "test coverage", cover, f"{time.time() - t0:.0f}s", flush=True)
