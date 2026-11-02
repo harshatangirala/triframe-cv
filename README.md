@@ -6,9 +6,9 @@ computed from the same price history**. Seven frozen, ImageNet-pretrained vision
 baseline under chronological splits, month-block bootstrap confidence intervals, label-shuffle and random-weight controls,
 and a sealed final holdout.
 
-The short answer from the pilot run: **the numbers carry the signal.** Volatility and drawdown risk are predictable; chart
-images do not add a significant improvement on the test years; and there is no detectable 5-day directional edge, so the
-decision layer defaults to **NO TRADE**.
+The short answer: volatility and drawdown risk are predictable; chart images add no significant gain in overall R² on the test
+years, though a later test finds a within-month gain that needs confirming on new data; and there is no detectable 5-day
+directional edge, so the decision layer defaults to **NO TRADE**.
 
 > **Scope.** Results below come from three completed runs: v4 on 500 stocks, v3 on 120 stocks and the earlier 60-stock pilot
 > (frozen only). Notebook v4 includes the fixes listed below. Honest status of the evaluation periods: the 2020-2022 test years have now been read by both runs, and the
@@ -16,7 +16,7 @@ decision layer defaults to **NO TRADE**.
 
 ## Research paper
 
-**[What Do Charts Add? Multi-Horizon Price Images and the Cross-Section of Equity Risk](paper/TriFrame_paper_SSRN_draft.pdf)** (working paper draft, November 2026). Sources, tables, figures and analysis scripts are in [`paper/`](paper).
+**[What Do Charts Add? Multi-Horizon Price Images and the Cross-Section of Equity Risk](paper/Tangirala_What_Do_Charts_Add.pdf)** (working paper, 2 November 2026; AI use is itemized in its Appendix B). Sources, tables, figures and analysis scripts are in [`paper/`](paper).
 
 The paper goes further than the course report and changes one headline. The pre-specified test still finds no gain in pooled R² (+0.003, 95% CI -0.018 to +0.026). Splitting the error shows why: images raise **within-month** R² by +0.020 (95% CI 0.012 to 0.027) but do not improve the market-wide level forecast. This cross-sectional test was added after the data were seen, so treat it as a hypothesis for fresh data.
 
@@ -35,7 +35,7 @@ Corrections to earlier material in this repository:
 
 - **Did scores improve?** On the same stocks and rows as the earlier runs, test volatility R² rose by about +0.01 (0.496 to 0.510 and
   0.503 to 0.513); drawdown AUC fell by about 0.008 and direction is unchanged. Validation scores rose for every target.
-- **Images still add nothing significant on test:** volatility ΔR² +0.003 (95% CI -0.018 to +0.026), direction ΔAUC -0.002.
+- **Images add no significant gain in overall R² on test:** volatility ΔR² +0.003 (95% CI -0.018 to +0.026), direction ΔAUC -0.002. A later, not pre-specified test finds a within-month gain of +0.020 (95% CI 0.012 to 0.027); see the paper.
 - **Fine-tuning** (early-stopped on 2015-2016, so validation stays clean) raised validation R² in 9 of 9 comparisons; training only
   the last 25-50% of a network gained nothing.
 - **Training reached the minimum where that can be proven:** certified global minimum for the ridge and logistic heads.

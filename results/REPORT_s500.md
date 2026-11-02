@@ -39,15 +39,16 @@ report, so shifts of about 0.01 may be noise.
   sits at the bottom of its valley in the loss landscape; a global minimum cannot be certified for a neural network.
 - **Metrics and curves.** Precision, recall, F1, ROC-AUC, R², RMSE; ROC and precision-recall curves, confusion matrices,
   reliability plots; training, early-stopping and validation curves for all 7 networks; boosting and learning curves.
-- **Beats the classical volatility models on the test years:** rolling 22-day about 0.42, EWMA about 0.45, HAR about 0.48,
-  against 0.50.
+- **Ahead of classical volatility models on squared error:** rolling 22-day about 0.42, GARCH(1,1) 0.44, EWMA about 0.45, HAR about
+  0.48, against 0.50. The gain over GARCH is significant and the gain over HAR is not; under QLIKE the simple models win.
 - **Same conclusions at 60, 120 and 500 stocks.** The NO TRADE flag separates risky cases (volatility 56% vs 30%, 10% drawdowns
   40% vs 21%), and the Monte Carlo 90% band held 88% of test outcomes.
 
 ## Observations
 
-1. **Chart images add to the numbers on validation but not on test.** Validation: R² 0.592 vs 0.546. Test: +0.003 (95% CI -0.018
-   to +0.026), so H1 is not supported. Direction AUC changed by -0.002 (-0.009 to +0.004).
+1. **Chart images add to overall R² on validation but not on test.** Validation: R² 0.592 vs 0.546. Test: +0.003 (95% CI -0.018
+   to +0.026), so H1 is not supported. Direction AUC changed by -0.002 (-0.009 to +0.004). A later test, not pre-specified, finds
+   a within-month gain of +0.020 (95% CI 0.012 to 0.027) that a worse market-wide level forecast cancels out; see the working paper in `paper/`.
 2. **The drawdown pick looks lucky rather than better.** It had the best validation AUC but ranked last of 17 candidates on test,
    though all 17 are within about 0.01 of each other.
 3. **2020 is the weak year.** Volatility R² by year: 2017 about 0.60, 2018 0.52, 2019 0.61, **2020 0.27**, 2021 0.63, 2022 0.57.

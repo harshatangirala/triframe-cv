@@ -1,6 +1,6 @@
 # Working paper: What Do Charts Add?
 
-`TriFrame_paper_SSRN_draft.pdf` is the draft. `paper_body.html` holds the text; `build_paper.py` fills the tables from result files and writes `TriFrame_paper.html`, which is printed to PDF with a headless browser.
+`Tangirala_What_Do_Charts_Add.pdf` is the working paper. `SSRN_submission.md` holds the fields for the SSRN form. `paper_body.html` holds the text; `build_paper.py` fills the tables from result files and writes `TriFrame_paper.html`, which is printed to PDF with a headless browser.
 
 | Folder | Contents |
 |---|---|
@@ -10,4 +10,4 @@
 
 To reproduce: run the notebook, then `supplementary_analysis.py <data_root> <run_root> <repo_root> <out_dir>`, `make_figures.py <run_root> <tab_dir> <out_dir>` and `build_paper.py <run_results_s500_dir> <run_results_root>`. The price data are not redistributed; `docs/DATA_CARD.md` describes them. Aggregate run results are in `results/s500_run/`.
 
-Before submitting to SSRN, the author adds an affiliation and email, and confirms the funding and conflict-of-interest statement on the title page.
+Appendix B of the paper itemizes the use of AI tools.
