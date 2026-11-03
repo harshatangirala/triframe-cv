@@ -2,7 +2,9 @@
 
 **Title:** What Do Charts Add? Multi-Horizon Price Images and the Cross-Section of Equity Risk
 
-**Author:** Krishna Harsha Tangirala, Independent Market Researcher and Trader
+**Author:** Krishna Harsha Tangirala
+
+**Affiliation:** University of Wollongong in Dubai (Master's student, Applied Artificial Intelligence)
 
 **Date written:** November 2, 2026
 

@@ -1,5 +1,7 @@
 # TriFrame CV: do stock chart images add anything to the numbers?
 
+Krishna Harsha Tangirala, University of Wollongong in Dubai (Master of Applied Artificial Intelligence). Started as coursework for a Computer Vision with Deep Learning course.
+
 TriFrame tests whether pictures of price charts at three time scales (weekly, daily and hourly) tell a model anything about
 a US stock's next 20 days of volatility, its drawdown risk, or its 5-day relative direction **beyond 33 ordinary numbers
 computed from the same price history**. Seven frozen, ImageNet-pretrained vision backbones are compared with that numerical
